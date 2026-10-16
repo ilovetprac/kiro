@@ -107,6 +107,19 @@ ros2 topic echo /qr_coordinates_node/qr/id
 
 ## Troubleshooting
 
+- **`AttributeError: _ARRAY_API not found` / "module compiled using NumPy 1.x
+  cannot be run in NumPy 2.x"** — Ubuntu's `cv_bridge`/`python3-opencv` are built
+  against NumPy 1.x. If a NumPy 2.x got installed via pip, pin it back:
+  ```bash
+  pip3 install "numpy<2"
+  python3 -c "import numpy; print(numpy.__version__)"   # must be 1.x
+  ```
+- **`xioctl(UVCIOC_CTRL_QUERY) failed ... Connection timed out` / "No intrinsics
+  available ... Using zeroed intrinsics"** — The driver can't talk to the camera.
+  First confirm the camera itself works outside ROS with
+  `rs-enumerate-devices -c` (install `librealsense2-utils`). If that succeeds,
+  the issue is usually a flaky USB port/cable or power — try another blue USB 3.0
+  port, a known-good USB 3 data cable, and the official 5V/3A supply.
 - **No detections / no output** — Confirm topics exist: `ros2 topic list | grep camera`.
   Make sure `align_depth.enable:=true` is set (the provided launch does this).
 - **"no valid depth at pixel ..."** — QR too close/far/reflective. Keep it 0.3–3 m.
