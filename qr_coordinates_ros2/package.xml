@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>qr_coordinates_ros2</name>
+  <version>0.1.0</version>
+  <description>
+    ROS 2 Humble node that detects QR codes from an Intel RealSense D435 and
+    publishes each code's X, Y, Z position (meters, in the camera frame) along
+    with the decoded QR ID.
+  </description>
+  <maintainer email="you@example.com">ilovetprac</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <!-- Pull in the RealSense ROS 2 driver as a runtime dependency -->
+  <exec_depend>realsense2_camera</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
