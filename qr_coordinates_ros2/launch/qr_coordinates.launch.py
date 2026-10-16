@@ -58,6 +58,12 @@ def generate_launch_description():
             "enable_accel": "false",
             "enable_infra1": "false",
             "enable_infra2": "false",
+            # Hardware-reset the camera on startup. On a Raspberry Pi 4B this
+            # frequently clears the "UVCIOC_CTRL_QUERY ... Connection timed out"
+            # failures caused by the device being left in a bad USB state.
+            "initial_reset": "true",
+            # Give the device longer to come up after the reset.
+            "wait_for_device_timeout": "15.0",
         }.items(),
     )
 
