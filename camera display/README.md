@@ -44,26 +44,26 @@ The origin `(0, 0, 0)` is the camera itself.
 
 ```bash
 cd "camera display"
-python -m venv .venv
+python3 -m venv .venv
 # Linux/macOS:
 source .venv/bin/activate
 # Windows:
 # .venv\Scripts\activate
 
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 ## Run
 
 ```bash
 # With a live annotated preview window:
-python qr_coordinates.py
+python3 qr_coordinates.py
 
 # Headless (terminal output only, no window):
-python qr_coordinates.py --no-display
+python3 qr_coordinates.py --no-display
 
 # Custom resolution / frame rate:
-python qr_coordinates.py --width 1280 --height 720 --fps 30
+python3 qr_coordinates.py --width 1280 --height 720 --fps 30
 ```
 
 Point a QR code at the camera. Coordinates print continuously.

@@ -20,8 +20,8 @@ Camera coordinate frame (RealSense convention, meters):
     +Z : forward (away from the camera, into the scene)
 
 Run:
-    python qr_coordinates.py                 # with live preview window
-    python qr_coordinates.py --no-display    # headless (print only)
+    python3 qr_coordinates.py                 # with live preview window
+    python3 qr_coordinates.py --no-display    # headless (print only)
 """
 
 import argparse
@@ -35,7 +35,7 @@ try:
 except ImportError:
     sys.exit(
         "OpenCV is not installed. Install it with:\n"
-        "    pip install opencv-python"
+        "    pip3 install opencv-python"
     )
 
 try:
@@ -43,7 +43,7 @@ try:
 except ImportError:
     sys.exit(
         "pyrealsense2 is not installed. Install it with:\n"
-        "    pip install pyrealsense2\n"
+        "    pip3 install pyrealsense2\n"
         "(This also requires an Intel RealSense D435 camera connected via USB 3.0.)"
     )
 
