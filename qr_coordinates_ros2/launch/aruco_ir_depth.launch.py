@@ -78,7 +78,7 @@ def generate_launch_description():
         parameters=[{
             "aruco_dictionary": aruco_dictionary,
             "ir_topic": "/camera/camera/infra1/image_rect_raw",
-            "depth_topic": "/camera/camera/aligned_depth_to_infra1/image_raw",
+            "depth_topic": "/camera/camera/depth/image_rect_raw",
             "camera_info_topic": "/camera/camera/infra1/camera_info",
             "sync_slop": 0.05,
         }],

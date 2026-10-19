@@ -24,7 +24,7 @@ Publish/subscribe (built for a later Pi -> Arduino bridge)
 ==========================================================
 Subscribes (time-synchronized):
   <ir_topic>            sensor_msgs/Image       infra1 (IR) image
-  <depth_topic>         sensor_msgs/Image       depth aligned to infra1 (16UC1 mm)
+  <depth_topic>         sensor_msgs/Image       depth in infra1 frame (16UC1 mm)
   <camera_info_topic>   sensor_msgs/CameraInfo  infra1 intrinsics
 
 Publishes:
@@ -81,7 +81,10 @@ class ArucoIrDepthNode(Node):
             "ir_topic", "/camera/camera/infra1/image_rect_raw")
         self.declare_parameter(
             "depth_topic",
-            "/camera/camera/aligned_depth_to_infra1/image_raw")
+            # Plain depth is already in the left-IR (infra1) frame on the D435,
+            # so deprojecting with infra1 intrinsics is correct. The
+            # aligned_depth_to_infra1 topic is not produced when color is off.
+            "/camera/camera/depth/image_rect_raw")
         self.declare_parameter(
             "camera_info_topic", "/camera/camera/infra1/camera_info")
         self.declare_parameter("sync_slop", 0.05)
