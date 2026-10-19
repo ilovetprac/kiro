@@ -67,6 +67,9 @@ def generate_launch_description():
             "enable_accel": "false",
             "enable_sync": "false",
             "initial_reset": "false",
+            # Quiet the harmless "control_transfer ... Resource temporarily
+            # unavailable" RSUSB WARNING flood so the marker output is readable.
+            "log_level": "error",
         }.items(),
     )
 

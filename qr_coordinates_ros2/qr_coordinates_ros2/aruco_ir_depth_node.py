@@ -49,7 +49,7 @@ from cv_bridge import CvBridge
 
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PointStamped, Point
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, String
 
 # realsense2_camera publishes images with sensor-data QoS (BEST_EFFORT). A
 # default (RELIABLE) subscriber silently receives nothing, which looks like
@@ -128,6 +128,9 @@ class ArucoIrDepthNode(Node):
         self.point_pub = self.create_publisher(
             PointStamped, "~/marker/point", 10)
         self.xy_mm_pub = self.create_publisher(Point, "~/marker/xy_mm", 10)
+        # Combined human-readable topic: "id=7 x=12.3 y=-4.8 z=512.0 (mm)".
+        # Convenient so `ros2 topic echo` shows id + X/Y/Z together.
+        self.info_pub = self.create_publisher(String, "~/marker/info", 10)
 
         # camera_info uses default (RELIABLE) QoS in realsense2_camera.
         self.create_subscription(CameraInfo, info_topic, self._on_info, 10)
@@ -281,9 +284,14 @@ class ArucoIrDepthNode(Node):
         if res is None:
             return
         marker_id, x_mm, y_mm, z_mm = res
-        self.get_logger().info(
-            f"Marker {marker_id}  X: {x_mm:+7.1f} mm  Y: {y_mm:+7.1f} mm  "
-            f"(Z: {z_mm:7.1f} mm)")
+        line = (f"Marker {marker_id}  X: {x_mm:+7.1f} mm  Y: {y_mm:+7.1f} mm  "
+                f"(Z: {z_mm:7.1f} mm)")
+        # 1st terminal: print at the chosen rate.
+        self.get_logger().info(line)
+        # 2nd terminal: publish the same readable line so `ros2 topic echo
+        # ~/marker/info` shows id + X/Y/Z together at the print rate.
+        self.info_pub.publish(String(
+            data=f"id={marker_id} x={x_mm:.1f} y={y_mm:.1f} z={z_mm:.1f} (mm)"))
         # Clear so we don't repeat a stale value if the marker leaves view.
         self._latest_result = None
 
