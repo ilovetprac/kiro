@@ -29,6 +29,7 @@ setup(
     entry_points={
         "console_scripts": [
             "qr_coordinates_node = qr_coordinates_ros2.qr_coordinates_node:main",
+            "aruco_ir_depth_node = qr_coordinates_ros2.aruco_ir_depth_node:main",
         ],
     },
 )
