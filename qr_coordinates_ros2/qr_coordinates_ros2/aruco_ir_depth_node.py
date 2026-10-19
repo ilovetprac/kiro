@@ -89,7 +89,7 @@ class ArucoIrDepthNode(Node):
             "camera_info_topic", "/camera/camera/infra1/camera_info")
         self.declare_parameter("sync_slop", 0.05)
         # How many times per second to PRINT the latest X/Y to the console.
-        self.declare_parameter("print_rate_hz", 60.0)
+        self.declare_parameter("print_rate_hz", 30.0)
         # Half-size of the depth sampling window (pixels). Depth is taken as the
         # median of valid pixels in a (2*w+1)^2 patch around the marker center.
         self.declare_parameter("depth_window", 4)
@@ -149,7 +149,7 @@ class ArucoIrDepthNode(Node):
 
         # Throttled printer: detection runs at the IR frame rate (~30 Hz) and
         # keeps publishing on topics every frame, but we only PRINT the latest
-        # X/Y at print_rate_hz (default 60 Hz).
+        # X/Y at print_rate_hz (default 30 Hz, matching the camera frame rate).
         print_hz = float(self.get_parameter("print_rate_hz").value)
         if print_hz > 0.0:
             self.create_timer(1.0 / print_hz, self._print_latest)
