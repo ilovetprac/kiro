@@ -62,11 +62,26 @@ class QrCoordinatesNode(Node):
         self.bridge = CvBridge()
         self.qr_detector = cv2.QRCodeDetector()
 
+        self.declare_parameter("save_debug_image", False)
+        self.declare_parameter("debug_image_path", "/tmp/qr_debug_frame.png")
+
         # Latest camera intrinsics (filled from camera_info when available).
         self._intrinsics = None  # (fx, fy, cx, cy)
         # Whether we've seen depth frames (for "auto" mode upgrade).
         self._depth_seen = False
         self._frames_seen = 0
+        self._detections = 0
+        self._last_frame = None
+        self._save_debug = bool(self.get_parameter("save_debug_image").value)
+        self._debug_path = str(self.get_parameter("debug_image_path").value)
+
+        # Optional, much more robust QR detector (OpenCV contrib). Available if
+        # the installed OpenCV ships the WeChat model files; otherwise None.
+        self._wechat = None
+        try:
+            self._wechat = cv2.wechat_qrcode_WeChatQRCode()
+        except Exception:  # noqa: BLE001
+            self._wechat = None
 
         # ---- Publishers ----
         self.id_pub = self.create_publisher(String, "~/qr/id", 10)
@@ -119,20 +134,79 @@ class QrCoordinatesNode(Node):
         else:
             depth_note = "with depth" if self._depth_seen else "color only (2D)"
             self.get_logger().info(
-                f"Alive: {self._frames_seen} color frames seen, {depth_note}.")
+                f"Alive: {self._frames_seen} color frames seen, {depth_note}, "
+                f"{self._detections} QR detections so far."
+            )
+            if self._detections == 0:
+                self.get_logger().warn(
+                    "Frames arriving but NO QR detected yet. Try a LARGER code, "
+                    "40-60 cm away, flat, well-lit. "
+                    "Set 'save_debug_image:=true' to dump a frame to "
+                    f"{self._debug_path} for inspection."
+                )
+                if self._save_debug and self._last_frame is not None:
+                    try:
+                        cv2.imwrite(self._debug_path, self._last_frame)
+                        self.get_logger().info(
+                            f"Saved debug frame to {self._debug_path}")
+                    except Exception as exc:  # noqa: BLE001
+                        self.get_logger().warn(f"Could not save debug frame: {exc}")
 
     def _detect(self, color_image):
-        """Return list of (id, u, v, corner_pts)."""
+        """Return list of (id, u, v, corner_pts). Tries several strategies for
+        robustness at 640x480 on a Pi: raw, grayscale, and 2x upscale; plus the
+        WeChat detector if available."""
+        self._last_frame = color_image
+
+        # Strategy 1: standard detector on the raw color image.
+        res = self._detect_opencv(color_image, scale=1.0)
+        if res:
+            return res
+
+        # Strategy 2: grayscale (often more reliable for the plain detector).
+        gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        res = self._detect_opencv(gray, scale=1.0)
+        if res:
+            return res
+
+        # Strategy 3: 2x upscale — helps when the code is small in frame.
+        big = cv2.resize(gray, None, fx=2.0, fy=2.0,
+                         interpolation=cv2.INTER_CUBIC)
+        res = self._detect_opencv(big, scale=2.0)
+        if res:
+            return res
+
+        # Strategy 4: WeChat detector (much more robust), if available.
+        if self._wechat is not None:
+            try:
+                texts, pts = self._wechat.detectAndDecode(color_image)
+                out = []
+                for t, box in zip(texts, pts):
+                    box = np.array(box).reshape(-1, 2).astype(int)
+                    u = int(np.clip(int(np.mean(box[:, 0])), 0,
+                                    color_image.shape[1] - 1))
+                    v = int(np.clip(int(np.mean(box[:, 1])), 0,
+                                    color_image.shape[0] - 1))
+                    out.append((t if t else "(unreadable)", u, v, box))
+                if out:
+                    return out
+            except Exception:  # noqa: BLE001
+                pass
+
+        return []
+
+    def _detect_opencv(self, img, scale):
+        """Run cv2.QRCodeDetector on img; map points back by 1/scale."""
         results = []
-        ok, decoded_info, points, _ = self.qr_detector.detectAndDecodeMulti(
-            color_image)
+        ok, decoded_info, points, _ = self.qr_detector.detectAndDecodeMulti(img)
         if not ok or points is None:
             return results
-        h, w = color_image.shape[:2]
+        # If img is grayscale we still need width/height for clamping.
+        h, w = img.shape[:2]
         for qr_id, corner_pts in zip(decoded_info, points):
-            corner_pts = corner_pts.astype(int)
-            u = int(np.clip(int(np.mean(corner_pts[:, 0])), 0, w - 1))
-            v = int(np.clip(int(np.mean(corner_pts[:, 1])), 0, h - 1))
+            corner_pts = (corner_pts / scale).astype(int)
+            u = int(np.clip(int(np.mean(corner_pts[:, 0])), 0, int(w / scale) - 1))
+            v = int(np.clip(int(np.mean(corner_pts[:, 1])), 0, int(h / scale) - 1))
             results.append((qr_id if qr_id else "(unreadable)", u, v, corner_pts))
         return results
 
@@ -158,6 +232,7 @@ class QrCoordinatesNode(Node):
         self._frames_seen += 1
 
         for label, u, v, _ in self._detect(color):
+            self._detections += 1
             self._publish_id_pixel(color_msg.header, label, u, v)
             self.get_logger().info(
                 f"QR ID: {label!r} | pixel (u, v) = ({u}, {v})  [2D]")
@@ -174,6 +249,7 @@ class QrCoordinatesNode(Node):
         self._frames_seen += 1
 
         for label, u, v, _ in self._detect(color):
+            self._detections += 1
             # Always publish ID + pixel.
             self._publish_id_pixel(color_msg.header, label, u, v)
 
