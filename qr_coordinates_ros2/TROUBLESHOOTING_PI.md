@@ -103,9 +103,43 @@ start (null-pointer/"block" error, or a hang). With **both OFF** the camera
 streams normally. The launch file in this repo now defaults to
 `enable_sync:=false` and `initial_reset:=false` for this reason.
 
+## Depth fails to start / "partial device" / camera disconnects = POWER
+
+Symptoms, all pointing at the same root cause — the D435 not getting enough
+power from the Pi 4B's USB port:
+
+```
+XXX Hardware Notification: Depth stream start failure ... Hardware Error
+usb_request_queue returned error ... error: No such device, number: 19
+The device has been disconnected!
+d400-factory.cpp  PID 0x0b07 - falling back to partial device ...
+  set_xu(ctrl=1) failed! Last Error: Resource temporarily unavailable
+```
+
+**Why:** color streaming alone works, but when the DEPTH stream starts it powers
+up the IR laser projector + stereo imagers, spiking current draw. The Pi 4B's
+USB port can't supply that spike, so the camera browns out, resets, and drops
+off the USB bus. Lowering fps/resolution does NOT reliably fix it, and the depth
+profile `424x240` is invalid (D435 depth minimum is `480x270`) — asking for an
+unsupported profile makes the driver silently fall back to `1280x720@30` (max
+power), making it worse.
+
+**Fix (required hardware):**
+
+1. **Powered USB 3.0 hub** (a hub WITH its own wall power adapter). Wire it as:
+   `D435 -> powered hub -> Pi`, with the hub plugged into wall power. The camera
+   keeps its single USB-C cable; the hub supplies the power the Pi can't. This is
+   the standard, reliable way to run a D435 on a Pi 4B.
+2. Use the official **5V/3A USB-C** supply for the Pi itself.
+3. Use a short, good-quality **USB 3.0 data cable**.
+
+Color-only (no depth) can run without a hub; depth + align reliably needs one.
+
 ## Note
 
-The ROS 2 package and launch file in this repo are not the cause of this error —
-the node builds, connects to the correct topics, and waits for frames. The
-blocker is below ROS, between librealsense, the camera firmware, and the kernel
-UVC driver. No launch-file change can fix a UVC control-transfer timeout.
+The ROS 2 package and launch file in this repo are not the cause of these errors
+— the node builds, connects to the correct topics, and streams color fine. The
+blockers are all below ROS: kernel UVC driver (fixed with RSUSB), library version
+mismatch (fixed by rebuilding the wrapper), and finally camera power delivery
+(needs a powered USB hub). No launch-file change can fix a camera that loses
+power when the depth projector starts.
