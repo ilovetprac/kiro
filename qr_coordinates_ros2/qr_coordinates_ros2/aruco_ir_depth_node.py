@@ -92,7 +92,10 @@ class ArucoIrDepthNode(Node):
         self.declare_parameter("print_rate_hz", 30.0)
         # Half-size of the depth sampling window (pixels). Depth is taken as the
         # median of valid pixels in a (2*w+1)^2 patch around the marker center.
-        self.declare_parameter("depth_window", 4)
+        self.declare_parameter("depth_window", 20)
+        # If True, keep publishing the last good reading when a frame has no
+        # valid depth (so the stream does not stall on depth holes).
+        self.declare_parameter("hold_last", True)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         ir_topic = self.get_parameter("ir_topic").value
@@ -119,6 +122,7 @@ class ArucoIrDepthNode(Node):
         self._detections = 0
         self._latest_depth = None  # most recent depth cv image
         self._depth_window = int(self.get_parameter("depth_window").value)
+        self._hold_last = bool(self.get_parameter("hold_last").value)
         # Latest marker result for the throttled printer:
         # (marker_id, x_mm, y_mm, z_mm) or None if nothing seen recently.
         self._latest_result = None
@@ -245,10 +249,15 @@ class ArucoIrDepthNode(Node):
             patch = depth[y0:y1, x0:x1].astype(np.float32)
             valid = patch[patch > 0]
             if valid.size == 0:
-                self.get_logger().info(
-                    f"Marker ID {marker_id}: no valid depth near center "
-                    f"({u}, {v}) — move the marker toward the image center "
-                    "(depth has no data near the edges).")
+                # No depth in the window. With hold_last we simply keep the
+                # previous reading (the 30 Hz printer keeps emitting it), so
+                # the stream doesn't stall on brief depth holes. Warn rarely.
+                self._no_depth_count = getattr(self, "_no_depth_count", 0) + 1
+                if self._no_depth_count % 60 == 1:
+                    self.get_logger().warn(
+                        f"ID {marker_id}: no depth near ({u},{v}). Enable the "
+                        "IR emitter for solid depth on flat markers, and keep "
+                        "the marker nearer the image center.")
                 continue
             raw = float(np.median(valid))
             z = raw / 1000.0 if depth.dtype == np.uint16 else raw  # meters
@@ -293,8 +302,10 @@ class ArucoIrDepthNode(Node):
         # ~/marker/info` shows id + X/Y/Z together at the print rate.
         self.info_pub.publish(String(
             data=f"id={marker_id} x={x_mm:.1f} y={y_mm:.1f} z={z_mm:.1f} (mm)"))
-        # Clear so we don't repeat a stale value if the marker leaves view.
-        self._latest_result = None
+        # With hold_last, keep emitting the last good value for a steady stream
+        # across brief depth holes. Otherwise clear so stale values don't repeat.
+        if not self._hold_last:
+            self._latest_result = None
 
 
 def main(args=None):
