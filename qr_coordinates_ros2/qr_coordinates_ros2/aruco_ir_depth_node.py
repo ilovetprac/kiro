@@ -88,6 +88,8 @@ class ArucoIrDepthNode(Node):
         self.declare_parameter(
             "camera_info_topic", "/camera/camera/infra1/camera_info")
         self.declare_parameter("sync_slop", 0.05)
+        # How many times per second to PRINT the latest X/Y to the console.
+        self.declare_parameter("print_rate_hz", 10.0)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         ir_topic = self.get_parameter("ir_topic").value
@@ -113,6 +115,9 @@ class ArucoIrDepthNode(Node):
         self._depth_rx = 0         # depth frames received
         self._detections = 0
         self._latest_depth = None  # most recent depth cv image
+        # Latest marker result for the throttled printer:
+        # (marker_id, x_mm, y_mm, z_mm) or None if nothing seen recently.
+        self._latest_result = None
 
         # ---- Publishers ----
         self.id_pub = self.create_publisher(Int32, "~/marker/id", 10)
@@ -134,6 +139,13 @@ class ArucoIrDepthNode(Node):
             Image, ir_topic, self._on_ir, SENSOR_QOS)
 
         self.create_timer(3.0, self._heartbeat)
+
+        # Throttled printer: detection runs at the IR frame rate (~30 Hz) and
+        # keeps publishing on topics every frame, but we only PRINT the latest
+        # X/Y at print_rate_hz (default 10 Hz) to keep the console readable.
+        print_hz = float(self.get_parameter("print_rate_hz").value)
+        if print_hz > 0.0:
+            self.create_timer(1.0 / print_hz, self._print_latest)
 
         self.get_logger().info(
             "aruco_ir_depth_node started.\n"
@@ -245,10 +257,20 @@ class ArucoIrDepthNode(Node):
             xy.x, xy.y, xy.z = float(x_mm), float(y_mm), float(z_mm)
             self.xy_mm_pub.publish(xy)
 
-            # Continuous print in mm
-            self.get_logger().info(
-                f"Marker {marker_id}  X: {x_mm:+7.1f} mm  Y: {y_mm:+7.1f} mm  "
-                f"(Z: {z_mm:7.1f} mm)")
+            # Store latest result; the throttled timer prints it at print_rate_hz.
+            self._latest_result = (marker_id, x_mm, y_mm, z_mm)
+
+    def _print_latest(self):
+        """Print the most recent marker X/Y at a fixed rate (default 10 Hz)."""
+        res = self._latest_result
+        if res is None:
+            return
+        marker_id, x_mm, y_mm, z_mm = res
+        self.get_logger().info(
+            f"Marker {marker_id}  X: {x_mm:+7.1f} mm  Y: {y_mm:+7.1f} mm  "
+            f"(Z: {z_mm:7.1f} mm)")
+        # Clear so we don't repeat a stale value if the marker leaves view.
+        self._latest_result = None
 
 
 def main(args=None):
