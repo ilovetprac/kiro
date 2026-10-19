@@ -48,6 +48,14 @@ def generate_launch_description():
         description="Start the depth stream. Leave false for 2D; true for 3D.",
     )
 
+    # ArUco dictionary your markers belong to. Common: DICT_4X4_50,
+    # DICT_5X5_100, DICT_6X6_250, DICT_APRILTAG_36h11.
+    declare_aruco_dict = DeclareLaunchArgument(
+        "aruco_dictionary",
+        default_value="DICT_4X4_50",
+        description="ArUco dictionary of your markers (e.g. DICT_4X4_50).",
+    )
+
     # Start the RealSense driver with depth aligned to color (so the depth
     # pixel under the QR center matches the color pixel).
     #
@@ -95,6 +103,7 @@ def generate_launch_description():
         output="screen",
         parameters=[{
             "mode": mode,
+            "aruco_dictionary": LaunchConfiguration("aruco_dictionary"),
             "color_topic": "/camera/camera/color/image_raw",
             "depth_topic": "/camera/camera/aligned_depth_to_color/image_raw",
             "camera_info_topic": "/camera/camera/color/camera_info",
@@ -106,6 +115,7 @@ def generate_launch_description():
         declare_start_camera,
         declare_mode,
         declare_enable_depth,
+        declare_aruco_dict,
         realsense_launch,
         qr_node,
     ])

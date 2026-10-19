@@ -2,27 +2,36 @@
 """
 qr_coordinates_node.py
 ----------------------
-ROS 2 Humble node that detects QR codes from an Intel RealSense D435 and reports
-each QR code's ID plus its position.
+ROS 2 Humble node that detects **ArUco markers** from an Intel RealSense D435
+and reports each marker's integer ID plus its position.
 
-Two modes (set the "mode" parameter):
-  * "2d"   : COLOR ONLY. Publishes the QR ID and its 2D pixel position (u, v).
+(Despite the historical file/node name "qr_coordinates", this detects ArUco
+markers, not QR codes. ArUco markers carry a numeric ID and are far more robust
+to detect than QR codes.)
+
+Modes (set the "mode" parameter):
+  * "2d"   : COLOR ONLY. Publishes the marker ID and its 2D pixel center (u, v).
              Works without depth — handy on a Pi 4B where the depth stream can't
              start (e.g. the camera browns out without a powered USB hub).
-  * "3d"   : COLOR + ALIGNED DEPTH + camera_info. Publishes the QR ID and the
-             real 3D point (X, Y, Z) in meters, in the camera frame.
-  * "auto" : Start in 2D; if depth frames are detected, upgrade to 3D
-             automatically (default).
+  * "3d"   : COLOR + ALIGNED DEPTH + camera_info. Publishes the marker ID and
+             the real 3D point (X, Y, Z) in meters, in the camera frame.
+  * "auto" : Start in 2D; upgrade to 3D automatically if depth frames appear.
+
+Parameters:
+  mode                "2d" | "3d" | "auto"            (default "auto")
+  aruco_dictionary    e.g. "DICT_4X4_50", "DICT_5X5_100", "DICT_6X6_250",
+                      "DICT_APRILTAG_36h11"           (default "DICT_4X4_50")
+  color_topic / depth_topic / camera_info_topic / sync_slop
+  save_debug_image    bool, dump an annotated frame for inspection (default false)
+  debug_image_path    where to save it (default /tmp/aruco_debug_frame.png)
 
 Published topics:
-  ~/qr/id      std_msgs/String             decoded QR data (always)
-  ~/qr/pixel   geometry_msgs/PointStamped  pixel position (x=u, y=v, z=0), 2D
-  ~/qr/point   geometry_msgs/PointStamped  3D position in meters (3D only)
+  ~/marker/id     std_msgs/Int32              detected marker ID (always)
+  ~/marker/pixel  geometry_msgs/PointStamped  pixel center (x=u, y=v, z=0), 2D
+  ~/marker/point  geometry_msgs/PointStamped  3D position in meters (3D only)
 
 3D deprojection (pinhole model from camera_info):
-    Z = depth(u, v)
-    X = (u - cx) * Z / fx
-    Y = (v - cy) * Z / fy
+    Z = depth(u, v);  X = (u - cx) * Z / fx;  Y = (v - cy) * Z / fy
 Camera optical frame (meters): +X right, +Y down, +Z forward.
 """
 
@@ -36,15 +45,30 @@ from cv_bridge import CvBridge
 import message_filters
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PointStamped
-from std_msgs.msg import String
+from std_msgs.msg import Int32
 
 
-class QrCoordinatesNode(Node):
+def _get_aruco_dictionary(name):
+    """Return a cv2.aruco dictionary by name, handling both the new (4.7+) and
+    old OpenCV ArUco APIs."""
+    name = name.upper()
+    const = getattr(cv2.aruco, name, None)
+    if const is None:
+        raise ValueError(f"Unknown ArUco dictionary: {name}")
+    # OpenCV >= 4.7
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        return cv2.aruco.getPredefinedDictionary(const)
+    # Older OpenCV
+    return cv2.aruco.Dictionary_get(const)
+
+
+class ArucoCoordinatesNode(Node):
     def __init__(self):
         super().__init__("qr_coordinates_node")
 
         # ---- Parameters ----
         self.declare_parameter("mode", "auto")  # "2d" | "3d" | "auto"
+        self.declare_parameter("aruco_dictionary", "DICT_4X4_50")
         self.declare_parameter(
             "color_topic", "/camera/camera/color/image_raw")
         self.declare_parameter(
@@ -52,50 +76,50 @@ class QrCoordinatesNode(Node):
         self.declare_parameter(
             "camera_info_topic", "/camera/camera/color/camera_info")
         self.declare_parameter("sync_slop", 0.05)
+        self.declare_parameter("save_debug_image", False)
+        self.declare_parameter(
+            "debug_image_path", "/tmp/aruco_debug_frame.png")
 
         self.mode = str(self.get_parameter("mode").value).lower()
+        dict_name = str(self.get_parameter("aruco_dictionary").value)
         color_topic = self.get_parameter("color_topic").value
         depth_topic = self.get_parameter("depth_topic").value
         info_topic = self.get_parameter("camera_info_topic").value
         slop = float(self.get_parameter("sync_slop").value)
-
-        self.bridge = CvBridge()
-        self.qr_detector = cv2.QRCodeDetector()
-
-        self.declare_parameter("save_debug_image", False)
-        self.declare_parameter("debug_image_path", "/tmp/qr_debug_frame.png")
-
-        # Latest camera intrinsics (filled from camera_info when available).
-        self._intrinsics = None  # (fx, fy, cx, cy)
-        # Whether we've seen depth frames (for "auto" mode upgrade).
-        self._depth_seen = False
-        self._frames_seen = 0
-        self._detections = 0
-        self._last_frame = None
         self._save_debug = bool(self.get_parameter("save_debug_image").value)
         self._debug_path = str(self.get_parameter("debug_image_path").value)
 
-        # Optional, much more robust QR detector (OpenCV contrib). Available if
-        # the installed OpenCV ships the WeChat model files; otherwise None.
-        self._wechat = None
-        try:
-            self._wechat = cv2.wechat_qrcode_WeChatQRCode()
-        except Exception:  # noqa: BLE001
-            self._wechat = None
+        self.bridge = CvBridge()
+
+        # ---- ArUco detector (handles both new and old OpenCV APIs) ----
+        self._aruco_dict = _get_aruco_dictionary(dict_name)
+        if hasattr(cv2.aruco, "ArucoDetector"):
+            params = cv2.aruco.DetectorParameters()
+            self._detector = cv2.aruco.ArucoDetector(self._aruco_dict, params)
+            self._new_api = True
+        else:
+            self._params = cv2.aruco.DetectorParameters_create()
+            self._detector = None
+            self._new_api = False
+
+        # State
+        self._intrinsics = None  # (fx, fy, cx, cy)
+        self._depth_seen = False
+        self._frames_seen = 0
+        self._detections = 0
+        self._last_annotated = None
 
         # ---- Publishers ----
-        self.id_pub = self.create_publisher(String, "~/qr/id", 10)
-        self.pixel_pub = self.create_publisher(PointStamped, "~/qr/pixel", 10)
-        self.point_pub = self.create_publisher(PointStamped, "~/qr/point", 10)
+        self.id_pub = self.create_publisher(Int32, "~/marker/id", 10)
+        self.pixel_pub = self.create_publisher(
+            PointStamped, "~/marker/pixel", 10)
+        self.point_pub = self.create_publisher(
+            PointStamped, "~/marker/point", 10)
 
-        # Always listen to camera_info (cheap) so 3D can work when depth exists.
-        self.create_subscription(
-            CameraInfo, info_topic, self._on_info, 10)
+        # camera_info is cheap — always listen so 3D works when depth exists.
+        self.create_subscription(CameraInfo, info_topic, self._on_info, 10)
 
-        want_depth = self.mode in ("3d", "auto")
-
-        if want_depth:
-            # Time-synchronized color + aligned depth.
+        if self.mode in ("3d", "auto"):
             color_sub = message_filters.Subscriber(self, Image, color_topic)
             depth_sub = message_filters.Subscriber(self, Image, depth_topic)
             self.sync = message_filters.ApproximateTimeSynchronizer(
@@ -103,21 +127,20 @@ class QrCoordinatesNode(Node):
             self.sync.registerCallback(self._on_color_depth)
 
         if self.mode in ("2d", "auto"):
-            # Plain color subscription — fires even if depth never arrives.
             self.create_subscription(
                 Image, color_topic, self._on_color_only, 10)
 
-        # Heartbeat so the user gets feedback even before any QR is detected.
         self.create_timer(3.0, self._heartbeat)
 
         self.get_logger().info(
-            "qr_coordinates_node started.\n"
+            "aruco marker node started.\n"
             f"  mode:        {self.mode}\n"
+            f"  dictionary:  {dict_name}\n"
             f"  color:       {color_topic}\n"
             f"  depth:       {depth_topic} (used in 3d/auto)\n"
             f"  camera_info: {info_topic}\n"
-            "Point a QR code at the D435. Publishing ~/qr/id, ~/qr/pixel"
-            " (and ~/qr/point in 3d)."
+            "Point an ArUco marker at the D435. Publishing ~/marker/id,"
+            " ~/marker/pixel (and ~/marker/point in 3d)."
         )
 
     # ---------------- callbacks ----------------
@@ -131,87 +154,54 @@ class QrCoordinatesNode(Node):
         if self._frames_seen == 0:
             self.get_logger().warn(
                 "No color frames received yet — is the camera streaming?")
-        else:
-            depth_note = "with depth" if self._depth_seen else "color only (2D)"
-            self.get_logger().info(
-                f"Alive: {self._frames_seen} color frames seen, {depth_note}, "
-                f"{self._detections} QR detections so far."
-            )
-            if self._detections == 0:
-                self.get_logger().warn(
-                    "Frames arriving but NO QR detected yet. Try a LARGER code, "
-                    "40-60 cm away, flat, well-lit. "
-                    "Set 'save_debug_image:=true' to dump a frame to "
-                    f"{self._debug_path} for inspection."
-                )
-                if self._save_debug and self._last_frame is not None:
-                    try:
-                        cv2.imwrite(self._debug_path, self._last_frame)
-                        self.get_logger().info(
-                            f"Saved debug frame to {self._debug_path}")
-                    except Exception as exc:  # noqa: BLE001
-                        self.get_logger().warn(f"Could not save debug frame: {exc}")
+            return
+        depth_note = "with depth" if self._depth_seen else "color only (2D)"
+        self.get_logger().info(
+            f"Alive: {self._frames_seen} color frames, {depth_note}, "
+            f"{self._detections} marker detections so far.")
+        if self._detections == 0:
+            self.get_logger().warn(
+                "Frames arriving but NO ArUco marker detected. Check the "
+                "'aruco_dictionary' param matches your markers (default "
+                "DICT_4X4_50). Try a larger marker, 30-80 cm away, flat and "
+                "well-lit. Set save_debug_image:=true to dump a frame.")
+            if self._save_debug and self._last_annotated is not None:
+                try:
+                    cv2.imwrite(self._debug_path, self._last_annotated)
+                    self.get_logger().info(
+                        f"Saved debug frame to {self._debug_path}")
+                except Exception as exc:  # noqa: BLE001
+                    self.get_logger().warn(f"Could not save debug frame: {exc}")
 
     def _detect(self, color_image):
-        """Return list of (id, u, v, corner_pts). Tries several strategies for
-        robustness at 640x480 on a Pi: raw, grayscale, and 2x upscale; plus the
-        WeChat detector if available."""
-        self._last_frame = color_image
-
-        # Strategy 1: standard detector on the raw color image.
-        res = self._detect_opencv(color_image, scale=1.0)
-        if res:
-            return res
-
-        # Strategy 2: grayscale (often more reliable for the plain detector).
+        """Return list of (marker_id:int, u:int, v:int, corners:ndarray)."""
         gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-        res = self._detect_opencv(gray, scale=1.0)
-        if res:
-            return res
+        if self._new_api:
+            corners, ids, _ = self._detector.detectMarkers(gray)
+        else:
+            corners, ids, _ = cv2.aruco.detectMarkers(
+                gray, self._aruco_dict, parameters=self._params)
 
-        # Strategy 3: 2x upscale — helps when the code is small in frame.
-        big = cv2.resize(gray, None, fx=2.0, fy=2.0,
-                         interpolation=cv2.INTER_CUBIC)
-        res = self._detect_opencv(big, scale=2.0)
-        if res:
-            return res
+        # Keep an annotated copy for optional debugging.
+        if self._save_debug:
+            annotated = color_image.copy()
+            if ids is not None:
+                cv2.aruco.drawDetectedMarkers(annotated, corners, ids)
+            self._last_annotated = annotated
 
-        # Strategy 4: WeChat detector (much more robust), if available.
-        if self._wechat is not None:
-            try:
-                texts, pts = self._wechat.detectAndDecode(color_image)
-                out = []
-                for t, box in zip(texts, pts):
-                    box = np.array(box).reshape(-1, 2).astype(int)
-                    u = int(np.clip(int(np.mean(box[:, 0])), 0,
-                                    color_image.shape[1] - 1))
-                    v = int(np.clip(int(np.mean(box[:, 1])), 0,
-                                    color_image.shape[0] - 1))
-                    out.append((t if t else "(unreadable)", u, v, box))
-                if out:
-                    return out
-            except Exception:  # noqa: BLE001
-                pass
-
-        return []
-
-    def _detect_opencv(self, img, scale):
-        """Run cv2.QRCodeDetector on img; map points back by 1/scale."""
         results = []
-        ok, decoded_info, points, _ = self.qr_detector.detectAndDecodeMulti(img)
-        if not ok or points is None:
+        if ids is None:
             return results
-        # If img is grayscale we still need width/height for clamping.
-        h, w = img.shape[:2]
-        for qr_id, corner_pts in zip(decoded_info, points):
-            corner_pts = (corner_pts / scale).astype(int)
-            u = int(np.clip(int(np.mean(corner_pts[:, 0])), 0, int(w / scale) - 1))
-            v = int(np.clip(int(np.mean(corner_pts[:, 1])), 0, int(h / scale) - 1))
-            results.append((qr_id if qr_id else "(unreadable)", u, v, corner_pts))
+        h, w = color_image.shape[:2]
+        for marker_id, quad in zip(ids.flatten(), corners):
+            pts = quad.reshape(-1, 2)
+            u = int(np.clip(int(pts[:, 0].mean()), 0, w - 1))
+            v = int(np.clip(int(pts[:, 1].mean()), 0, h - 1))
+            results.append((int(marker_id), u, v, pts))
         return results
 
-    def _publish_id_pixel(self, header, label, u, v):
-        self.id_pub.publish(String(data=label))
+    def _publish_id_pixel(self, header, marker_id, u, v):
+        self.id_pub.publish(Int32(data=int(marker_id)))
         px = PointStamped()
         px.header = header
         px.point.x = float(u)
@@ -220,8 +210,6 @@ class QrCoordinatesNode(Node):
         self.pixel_pub.publish(px)
 
     def _on_color_only(self, color_msg):
-        # In "auto" mode, once depth is flowing we let the synced callback do
-        # the work (3D) and skip the color-only path to avoid double-publishing.
         if self.mode == "auto" and self._depth_seen:
             return
         try:
@@ -230,12 +218,11 @@ class QrCoordinatesNode(Node):
             self.get_logger().warn(f"cv_bridge (color) failed: {exc}")
             return
         self._frames_seen += 1
-
-        for label, u, v, _ in self._detect(color):
+        for marker_id, u, v, _ in self._detect(color):
             self._detections += 1
-            self._publish_id_pixel(color_msg.header, label, u, v)
+            self._publish_id_pixel(color_msg.header, marker_id, u, v)
             self.get_logger().info(
-                f"QR ID: {label!r} | pixel (u, v) = ({u}, {v})  [2D]")
+                f"Marker ID: {marker_id} | pixel (u, v) = ({u}, {v})  [2D]")
 
     def _on_color_depth(self, color_msg, depth_msg):
         self._depth_seen = True
@@ -247,23 +234,21 @@ class QrCoordinatesNode(Node):
             self.get_logger().warn(f"cv_bridge (color+depth) failed: {exc}")
             return
         self._frames_seen += 1
-
-        for label, u, v, _ in self._detect(color):
+        for marker_id, u, v, _ in self._detect(color):
             self._detections += 1
-            # Always publish ID + pixel.
-            self._publish_id_pixel(color_msg.header, label, u, v)
+            self._publish_id_pixel(color_msg.header, marker_id, u, v)
 
-            # Try 3D if we have depth + intrinsics.
             if self._intrinsics is None:
                 self.get_logger().info(
-                    f"QR ID: {label!r} | pixel ({u}, {v}) — awaiting camera_info")
+                    f"Marker ID: {marker_id} | pixel ({u}, {v}) — awaiting"
+                    " camera_info")
                 continue
 
             raw = float(depth[v, u])
             z = raw / 1000.0 if depth.dtype == np.uint16 else raw
             if z <= 0.0:
                 self.get_logger().info(
-                    f"QR ID: {label!r} | pixel ({u}, {v}) — no valid depth")
+                    f"Marker ID: {marker_id} | pixel ({u}, {v}) — no valid depth")
                 continue
 
             fx, fy, cx, cy = self._intrinsics
@@ -275,12 +260,13 @@ class QrCoordinatesNode(Node):
             pt.point.x, pt.point.y, pt.point.z = float(x), float(y), float(z)
             self.point_pub.publish(pt)
             self.get_logger().info(
-                f"QR ID: {label!r} | X: {x:+.3f}  Y: {y:+.3f}  Z: {z:+.3f} m  [3D]")
+                f"Marker ID: {marker_id} | X: {x:+.3f}  Y: {y:+.3f}  "
+                f"Z: {z:+.3f} m  [3D]")
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = QrCoordinatesNode()
+    node = ArucoCoordinatesNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

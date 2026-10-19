@@ -1,10 +1,29 @@
-# qr_coordinates_ros2 — QR Code 3D Coordinates as a ROS 2 Node (D435)
+# qr_coordinates_ros2 — ArUco Marker 3D Coordinates as a ROS 2 Node (D435)
 
-A ROS 2 **Humble** `ament_python` package that detects QR codes from an Intel
-RealSense **D435** and **publishes** each QR code's **X, Y, Z position (meters)
-relative to the camera** plus the **decoded QR ID**.
+A ROS 2 **Humble** `ament_python` package that detects **ArUco markers** from an
+Intel RealSense **D435** and **publishes** each marker's **X, Y, Z position
+(meters) relative to the camera** plus its integer **marker ID**.
+
+> Note: the package/node keep the historical name `qr_coordinates`, but they
+> detect **ArUco markers** (via `cv2.aruco`), not QR codes. ArUco markers carry
+> a numeric ID and are much more robust to detect.
 
 Built and tuned for a **Raspberry Pi 4B (4GB) / Ubuntu 22.04 / ROS 2 Humble**.
+
+## ArUco dictionary
+
+Set the `aruco_dictionary` param/arg to match your markers (default
+`DICT_4X4_50`). Common values: `DICT_4X4_50`, `DICT_4X4_100`, `DICT_5X5_100`,
+`DICT_6X6_250`, `DICT_7X7_250`, `DICT_APRILTAG_36h11`.
+
+```bash
+# e.g. if your markers are from the 5x5 dictionary:
+ros2 launch qr_coordinates_ros2 qr_coordinates.launch.py aruco_dictionary:=DICT_5X5_100
+```
+
+> Requires the `aruco` module from OpenCV contrib. Ubuntu's `python3-opencv`
+> (4.5.4) includes it. Verify with:
+> `python3 -c "import cv2; print(hasattr(cv2, 'aruco'))"`  → should print `True`.
 
 ## Why this instead of the standalone script?
 
@@ -18,11 +37,11 @@ it needs **no `pyrealsense2`** and fits naturally into a ROS 2 robot.
 
 The node has a `mode` parameter so you can run it with or without depth:
 
-| Mode    | Needs depth? | Publishes                               | Use when |
-|---------|--------------|-----------------------------------------|----------|
-| `2d`    | No (color only) | QR **ID** + **pixel** (u, v)          | Depth can't start (e.g. Pi 4B without a powered USB hub) |
-| `3d`    | Yes          | QR **ID** + **3D point** (X, Y, Z, m)   | Depth is streaming reliably |
-| `auto`  | Optional     | 2D until depth appears, then 3D         | General use |
+| Mode    | Needs depth? | Publishes                                   | Use when |
+|---------|--------------|---------------------------------------------|----------|
+| `2d`    | No (color only) | marker **ID** + **pixel** (u, v)         | Depth can't start (e.g. Pi 4B without a powered USB hub) |
+| `3d`    | Yes          | marker **ID** + **3D point** (X, Y, Z, m)   | Depth is streaming reliably |
+| `auto`  | Optional     | 2D until depth appears, then 3D             | General use |
 
 **The launch file defaults to `2d` with the depth stream off**, so it runs on a
 Pi 4B without a powered hub. To get 3D once you have adequate power:
@@ -37,15 +56,17 @@ ros2 launch qr_coordinates_ros2 qr_coordinates.launch.py mode:=3d enable_depth:=
 
 ## What it publishes
 
-| Topic                               | Type                          | Description                         |
-|-------------------------------------|-------------------------------|-------------------------------------|
-| `~/qr/id`                           | `std_msgs/String`             | Decoded QR data / ID (always)       |
-| `~/qr/pixel`                        | `geometry_msgs/PointStamped`  | QR center pixel (x=u, y=v, z=0)     |
-| `~/qr/point`                        | `geometry_msgs/PointStamped`  | QR center in 3D (m), color frame (3D) |
+| Topic                               | Type                          | Description                              |
+|-------------------------------------|-------------------------------|------------------------------------------|
+| `~/marker/id`                       | `std_msgs/Int32`              | Detected ArUco marker ID (always)        |
+| `~/marker/pixel`                    | `geometry_msgs/PointStamped`  | Marker center pixel (x=u, y=v, z=0)      |
+| `~/marker/point`                    | `geometry_msgs/PointStamped`  | Marker center in 3D (m), color frame (3D)|
+
+Fully-qualified topic names are `/qr_coordinates_node/marker/{id,pixel,point}`.
 
 It also logs each detection to the ROS console:
 ```
-QR ID: 'box-42' | X: +0.051 m  Y: -0.012 m  Z: +0.734 m
+Marker ID: 7 | X: +0.051 m  Y: -0.012 m  Z: +0.734 m
 ```
 
 Coordinate frame (optical frame, meters): +X right, +Y down, +Z forward.
