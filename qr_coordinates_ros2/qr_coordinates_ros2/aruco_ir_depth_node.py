@@ -47,7 +47,6 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import cv2
 from cv_bridge import CvBridge
 
-import message_filters
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PointStamped, Point
 from std_msgs.msg import Int32
@@ -91,7 +90,8 @@ class ArucoIrDepthNode(Node):
         ir_topic = self.get_parameter("ir_topic").value
         depth_topic = self.get_parameter("depth_topic").value
         info_topic = self.get_parameter("camera_info_topic").value
-        slop = float(self.get_parameter("sync_slop").value)
+        # sync_slop kept as a declared param for launch compatibility (unused
+        # now that we pair IR with the latest cached depth frame).
 
         self.bridge = CvBridge()
 
@@ -106,8 +106,10 @@ class ArucoIrDepthNode(Node):
             self._new_api = False
 
         self._intrinsics = None  # (fx, fy, cx, cy)
-        self._frames_seen = 0
+        self._frames_seen = 0      # IR frames processed
+        self._depth_rx = 0         # depth frames received
         self._detections = 0
+        self._latest_depth = None  # most recent depth cv image
 
         # ---- Publishers ----
         self.id_pub = self.create_publisher(Int32, "~/marker/id", 10)
@@ -118,16 +120,15 @@ class ArucoIrDepthNode(Node):
         # camera_info uses default (RELIABLE) QoS in realsense2_camera.
         self.create_subscription(CameraInfo, info_topic, self._on_info, 10)
 
-        # Time-synchronized IR + aligned depth. IMPORTANT: use sensor-data
-        # (BEST_EFFORT) QoS to match the RealSense image publishers, otherwise
-        # the subscribers receive nothing.
-        ir_sub = message_filters.Subscriber(
-            self, Image, ir_topic, qos_profile=SENSOR_QOS)
-        depth_sub = message_filters.Subscriber(
-            self, Image, depth_topic, qos_profile=SENSOR_QOS)
-        self.sync = message_filters.ApproximateTimeSynchronizer(
-            [ir_sub, depth_sub], queue_size=10, slop=slop)
-        self.sync.registerCallback(self._on_ir_depth)
+        # Instead of a time-synchronizer (which silently matched nothing here),
+        # subscribe independently with sensor-data (BEST_EFFORT) QoS and pair
+        # each IR frame with the most-recent depth frame. The D435 IR and
+        # aligned-depth share the same imager/timing, so the latest depth is an
+        # excellent match for the current IR frame.
+        self.create_subscription(
+            Image, depth_topic, self._on_depth, SENSOR_QOS)
+        self.create_subscription(
+            Image, ir_topic, self._on_ir, SENSOR_QOS)
 
         self.create_timer(3.0, self._heartbeat)
 
@@ -147,14 +148,14 @@ class ArucoIrDepthNode(Node):
             self._intrinsics = (k[0], k[4], k[2], k[5])  # fx, fy, cx, cy
 
     def _heartbeat(self):
-        if self._frames_seen == 0:
+        if self._frames_seen == 0 and self._depth_rx == 0:
             self.get_logger().warn(
-                "No IR+depth frames yet — is the camera streaming infra1 and "
-                "aligned depth? (needs enable_infra1 + align_depth)")
+                "No IR or depth frames yet — is the camera streaming infra1 "
+                "and aligned depth? (needs enable_infra1 + align_depth)")
             return
         self.get_logger().info(
-            f"Alive: {self._frames_seen} IR+depth frames, "
-            f"{self._detections} marker detections so far.")
+            f"Alive: {self._frames_seen} IR frames, {self._depth_rx} depth "
+            f"frames, {self._detections} marker detections so far.")
 
     def _detect(self, ir_gray):
         """Detect ArUco in a single-channel IR image. Returns list of
@@ -175,7 +176,17 @@ class ArucoIrDepthNode(Node):
             out.append((int(marker_id), u, v))
         return out
 
-    def _on_ir_depth(self, ir_msg, depth_msg):
+    def _on_depth(self, depth_msg):
+        """Cache the most recent depth frame."""
+        try:
+            self._latest_depth = self.bridge.imgmsg_to_cv2(
+                depth_msg, desired_encoding="passthrough")
+            self._depth_rx += 1
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"cv_bridge (depth) failed: {exc}")
+
+    def _on_ir(self, ir_msg):
+        """On each IR frame: detect markers, pair with the latest depth."""
         try:
             # IR is mono8 (sometimes mono16); ArUco wants 8-bit single channel.
             ir = self.bridge.imgmsg_to_cv2(ir_msg, desired_encoding="passthrough")
@@ -183,20 +194,26 @@ class ArucoIrDepthNode(Node):
                 ir = cv2.convertScaleAbs(ir)
             if ir.ndim == 3:
                 ir = cv2.cvtColor(ir, cv2.COLOR_BGR2GRAY)
-            depth = self.bridge.imgmsg_to_cv2(
-                depth_msg, desired_encoding="passthrough")
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().warn(f"cv_bridge failed: {exc}")
+            self.get_logger().warn(f"cv_bridge (IR) failed: {exc}")
             return
 
         self._frames_seen += 1
 
+        depth = self._latest_depth
+        if depth is None:
+            return  # no depth yet
         if self._intrinsics is None:
             return
         fx, fy, cx, cy = self._intrinsics
 
+        dh, dw = depth.shape[:2]
         for marker_id, u, v in self._detect(ir):
-            raw = float(depth[v, u])
+            # Clamp to the depth image bounds (IR and aligned depth are the
+            # same size, but be safe).
+            du = min(u, dw - 1)
+            dv = min(v, dh - 1)
+            raw = float(depth[dv, du])
             z = raw / 1000.0 if depth.dtype == np.uint16 else raw  # meters
             if z <= 0.0:
                 self.get_logger().info(
