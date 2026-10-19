@@ -48,7 +48,6 @@ def generate_launch_description():
             "align_depth.enable": "true",
             "enable_color": "true",
             "enable_depth": "true",
-            "enable_sync": "true",
             # Modest, confirmed-supported profiles — friendly for a Pi 4B.
             # (D435 supports 640x480x30 for both color and depth.)
             "rgb_camera.color_profile": "640,480,30",
@@ -58,12 +57,14 @@ def generate_launch_description():
             "enable_accel": "false",
             "enable_infra1": "false",
             "enable_infra2": "false",
-            # Hardware-reset the camera on startup. On a Raspberry Pi 4B this
-            # frequently clears the "UVCIOC_CTRL_QUERY ... Connection timed out"
-            # failures caused by the device being left in a bad USB state.
-            "initial_reset": "true",
-            # Give the device longer to come up after the reset.
-            "wait_for_device_timeout": "15.0",
+            # IMPORTANT (Raspberry Pi 4B, RSUSB backend, FW 5.17.x):
+            # enable_sync=true and initial_reset=true caused the device to fail
+            # to start (null-pointer/block error, or a stuck state). With them
+            # OFF the camera streams normally at ~26 Hz. The
+            # "control_transfer ... Resource temporarily unavailable" lines are
+            # harmless WARNINGS on the RSUSB backend and do NOT stop streaming.
+            "enable_sync": "false",
+            "initial_reset": "false",
         }.items(),
     )
 

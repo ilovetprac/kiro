@@ -76,6 +76,33 @@ sudo dmesg | grep -i uvc | tail   # kernel UVC complaints (needs sudo)
 pkill -9 -f realsense2_camera_node   # clear a stale camera node holding /dev/video*
 ```
 
+## `control_transfer ... Resource temporarily unavailable (errno 11)` — harmless
+
+After switching to the RSUSB backend you may see a continuous stream of:
+
+```
+WARNING (messenger-libusb.cpp:42) control_transfer returned error, index: 768,
+  error: Resource temporarily unavailable, number: 11
+```
+
+These are **WARNINGS, not errors** — background control-channel retries on the
+RSUSB/libusb backend. **They do NOT stop image streaming.** Confirm frames are
+actually flowing:
+
+```bash
+ros2 topic hz /camera/camera/color/image_raw   # ~26 Hz = streaming fine
+```
+
+If `topic hz` shows a rate, ignore the warnings — the camera is working.
+
+## `enable_sync` / `initial_reset` make the device fail to start (Pi 4B)
+
+On the Pi 4B with the RSUSB backend and FW 5.17.x, launching with
+`enable_sync:=true` **or** `initial_reset:=true` caused the device to fail to
+start (null-pointer/"block" error, or a hang). With **both OFF** the camera
+streams normally. The launch file in this repo now defaults to
+`enable_sync:=false` and `initial_reset:=false` for this reason.
+
 ## Note
 
 The ROS 2 package and launch file in this repo are not the cause of this error —
