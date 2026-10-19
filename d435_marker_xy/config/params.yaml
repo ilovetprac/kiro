@@ -1,0 +1,13 @@
+d435_marker_xy:
+  ros__parameters:
+    aruco_dict: "DICT_4X4_50"      # your marker is a 4x4 (inner grid); border is normal
+    marker_id: -1                   # -1 = track first marker seen; set to e.g. 0 to lock an ID
+    width: 640
+    height: 480
+    fps: 30
+    emitter_enabled: false          # IR projector OFF so dots don't corrupt ArUco detection
+    depth_window: 2                 # half-window (px) for median depth filtering at center
+    publish_rate_hz: 30.0
+    frame_id: "d435_ir_optical_frame"
+    marker_size_mm: 100.0           # full printed square incl. white border = 10 cm
+    log_to_console: true            # print live "X=.. Y=.." to the ROS log
