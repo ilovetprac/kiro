@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""
+aruco_ir_depth_node.py
+----------------------
+ROS 2 Humble node that detects an ArUco marker in the Intel RealSense D435's
+**infrared (IR) stream** and uses the **aligned depth** to deproject the
+marker's center into real-world coordinates.
+
+Key properties
+==============
+  * IR only for detection (no RGB). The left IR imager (infra1) is the native
+    reference frame for depth, so depth aligns to it cleanly, and IR draws less
+    power than RGB.
+  * Deprojection (pinhole model from camera_info):
+        Z = depth(u, v)                      # forward distance, meters
+        X = (u - cx) * Z / fx                # right = +X
+        Y = -(v - cy) * Z / fy               # UP = +Y  (Cartesian, Y flipped)
+  * Origin = the camera's optical axis. When the marker is centered in the
+    image (camera pointed straight at it), X and Y read ~ (0, 0) — exactly like
+    the origin of a Cartesian plane. No manual origin calibration.
+  * Continuously prints X and Y in **millimeters** (Z too).
+
+Publish/subscribe (built for a later Pi -> Arduino bridge)
+==========================================================
+Subscribes (time-synchronized):
+  <ir_topic>            sensor_msgs/Image       infra1 (IR) image
+  <depth_topic>         sensor_msgs/Image       depth aligned to infra1 (16UC1 mm)
+  <camera_info_topic>   sensor_msgs/CameraInfo  infra1 intrinsics
+
+Publishes:
+  ~/marker/id      std_msgs/Int32              detected marker ID
+  ~/marker/point   geometry_msgs/PointStamped  (x, y, z) in METERS, Cartesian
+                                               (+X right, +Y up, +Z forward)
+  ~/marker/xy_mm   geometry_msgs/Point         (x, y) in MILLIMETERS, Cartesian
+                                               — convenient for the Arduino bridge
+
+A future Arduino link is just another subscriber: a small node (micro-ROS,
+rosserial, or a pyserial script) subscribes to ~/marker/xy_mm and forwards the
+values over USB serial. No change needed here.
+"""
+
+import numpy as np
+import rclpy
+from rclpy.node import Node
+
+import cv2
+from cv_bridge import CvBridge
+
+import message_filters
+from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import PointStamped, Point
+from std_msgs.msg import Int32
+
+
+def _get_aruco_dictionary(name):
+    name = name.upper()
+    const = getattr(cv2.aruco, name, None)
+    if const is None:
+        raise ValueError(f"Unknown ArUco dictionary: {name}")
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        return cv2.aruco.getPredefinedDictionary(const)
+    return cv2.aruco.Dictionary_get(const)
+
+
+class ArucoIrDepthNode(Node):
+    def __init__(self):
+        super().__init__("aruco_ir_depth_node")
+
+        # ---- Parameters ----
+        self.declare_parameter("aruco_dictionary", "DICT_4X4_250")
+        self.declare_parameter(
+            "ir_topic", "/camera/camera/infra1/image_rect_raw")
+        self.declare_parameter(
+            "depth_topic",
+            "/camera/camera/aligned_depth_to_infra1/image_raw")
+        self.declare_parameter(
+            "camera_info_topic", "/camera/camera/infra1/camera_info")
+        self.declare_parameter("sync_slop", 0.05)
+
+        dict_name = str(self.get_parameter("aruco_dictionary").value)
+        ir_topic = self.get_parameter("ir_topic").value
+        depth_topic = self.get_parameter("depth_topic").value
+        info_topic = self.get_parameter("camera_info_topic").value
+        slop = float(self.get_parameter("sync_slop").value)
+
+        self.bridge = CvBridge()
+
+        # ArUco detector (new OpenCV 4.7+ and old APIs)
+        self._aruco_dict = _get_aruco_dictionary(dict_name)
+        if hasattr(cv2.aruco, "ArucoDetector"):
+            params = cv2.aruco.DetectorParameters()
+            self._detector = cv2.aruco.ArucoDetector(self._aruco_dict, params)
+            self._new_api = True
+        else:
+            self._params = cv2.aruco.DetectorParameters_create()
+            self._new_api = False
+
+        self._intrinsics = None  # (fx, fy, cx, cy)
+        self._frames_seen = 0
+        self._detections = 0
+
+        # ---- Publishers ----
+        self.id_pub = self.create_publisher(Int32, "~/marker/id", 10)
+        self.point_pub = self.create_publisher(
+            PointStamped, "~/marker/point", 10)
+        self.xy_mm_pub = self.create_publisher(Point, "~/marker/xy_mm", 10)
+
+        # camera_info (cheap)
+        self.create_subscription(CameraInfo, info_topic, self._on_info, 10)
+
+        # Time-synchronized IR + aligned depth
+        ir_sub = message_filters.Subscriber(self, Image, ir_topic)
+        depth_sub = message_filters.Subscriber(self, Image, depth_topic)
+        self.sync = message_filters.ApproximateTimeSynchronizer(
+            [ir_sub, depth_sub], queue_size=10, slop=slop)
+        self.sync.registerCallback(self._on_ir_depth)
+
+        self.create_timer(3.0, self._heartbeat)
+
+        self.get_logger().info(
+            "aruco_ir_depth_node started.\n"
+            f"  dictionary:  {dict_name}\n"
+            f"  ir:          {ir_topic}\n"
+            f"  depth:       {depth_topic}\n"
+            f"  camera_info: {info_topic}\n"
+            "Origin = camera optical axis; marker centered => (0, 0).\n"
+            "Convention: +X right, +Y up (Cartesian). Units: millimeters."
+        )
+
+    def _on_info(self, msg: CameraInfo):
+        k = msg.k
+        if k[0] != 0.0 and k[4] != 0.0:
+            self._intrinsics = (k[0], k[4], k[2], k[5])  # fx, fy, cx, cy
+
+    def _heartbeat(self):
+        if self._frames_seen == 0:
+            self.get_logger().warn(
+                "No IR+depth frames yet — is the camera streaming infra1 and "
+                "aligned depth? (needs enable_infra1 + align_depth)")
+            return
+        self.get_logger().info(
+            f"Alive: {self._frames_seen} IR+depth frames, "
+            f"{self._detections} marker detections so far.")
+
+    def _detect(self, ir_gray):
+        """Detect ArUco in a single-channel IR image. Returns list of
+        (id, u, v)."""
+        if self._new_api:
+            corners, ids, _ = self._detector.detectMarkers(ir_gray)
+        else:
+            corners, ids, _ = cv2.aruco.detectMarkers(
+                ir_gray, self._aruco_dict, parameters=self._params)
+        out = []
+        if ids is None:
+            return out
+        h, w = ir_gray.shape[:2]
+        for marker_id, quad in zip(ids.flatten(), corners):
+            pts = quad.reshape(-1, 2)
+            u = int(np.clip(int(pts[:, 0].mean()), 0, w - 1))
+            v = int(np.clip(int(pts[:, 1].mean()), 0, h - 1))
+            out.append((int(marker_id), u, v))
+        return out
+
+    def _on_ir_depth(self, ir_msg, depth_msg):
+        try:
+            # IR is mono8 (sometimes mono16); ArUco wants 8-bit single channel.
+            ir = self.bridge.imgmsg_to_cv2(ir_msg, desired_encoding="passthrough")
+            if ir.dtype != np.uint8:
+                ir = cv2.convertScaleAbs(ir)
+            if ir.ndim == 3:
+                ir = cv2.cvtColor(ir, cv2.COLOR_BGR2GRAY)
+            depth = self.bridge.imgmsg_to_cv2(
+                depth_msg, desired_encoding="passthrough")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"cv_bridge failed: {exc}")
+            return
+
+        self._frames_seen += 1
+
+        if self._intrinsics is None:
+            return
+        fx, fy, cx, cy = self._intrinsics
+
+        for marker_id, u, v in self._detect(ir):
+            raw = float(depth[v, u])
+            z = raw / 1000.0 if depth.dtype == np.uint16 else raw  # meters
+            if z <= 0.0:
+                self.get_logger().info(
+                    f"Marker ID {marker_id}: no valid depth at center "
+                    f"({u}, {v})")
+                continue
+
+            # Deproject. Cartesian: +X right, +Y UP (flip image-down v).
+            x = (u - cx) * z / fx          # meters, right = +
+            y = -(v - cy) * z / fy         # meters, up = +  (negated)
+
+            self._detections += 1
+
+            # Publish ID
+            self.id_pub.publish(Int32(data=marker_id))
+
+            # Publish 3D point in meters (standard ROS)
+            pt = PointStamped()
+            pt.header = ir_msg.header
+            pt.point.x, pt.point.y, pt.point.z = float(x), float(y), float(z)
+            self.point_pub.publish(pt)
+
+            # Publish X,Y in millimeters (for the Arduino bridge)
+            x_mm, y_mm, z_mm = x * 1000.0, y * 1000.0, z * 1000.0
+            xy = Point()
+            xy.x, xy.y, xy.z = float(x_mm), float(y_mm), float(z_mm)
+            self.xy_mm_pub.publish(xy)
+
+            # Continuous print in mm
+            self.get_logger().info(
+                f"Marker {marker_id}  X: {x_mm:+7.1f} mm  Y: {y_mm:+7.1f} mm  "
+                f"(Z: {z_mm:7.1f} mm)")
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ArucoIrDepthNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

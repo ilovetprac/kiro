@@ -169,3 +169,50 @@ ros2 topic echo /qr_coordinates_node/qr/id
 - **Sync drops everything** — Increase `sync_slop` (e.g. `0.1`) if color/depth
   stamps drift on a loaded Pi.
 - **Choppy on the Pi** — Lower resolution/fps in the launch file, or run headless.
+
+---
+
+## IR + depth mode (Cartesian X/Y in mm) — `aruco_ir_depth_node`
+
+A second node, `aruco_ir_depth_node`, detects the ArUco marker in the D435's
+**infrared (infra1)** stream and uses **depth aligned to infra1** to deproject
+the marker center into real-world coordinates.
+
+- **Origin = the camera's optical axis.** When the marker is centered in the
+  image (camera pointed straight at it), X and Y read ~ **(0, 0)** — like the
+  origin of a Cartesian plane.
+- **Convention:** +X right, **+Y up** (Cartesian). **Units: millimeters.**
+- Deprojection: `Z = depth(u,v)`, `X = (u-cx)·Z/fx`, `Y = -(v-cy)·Z/fy`.
+- IR instead of RGB: natively aligned with depth and lower power.
+
+### Run
+
+```bash
+ros2 launch qr_coordinates_ros2 aruco_ir_depth.launch.py aruco_dictionary:=DICT_4X4_250
+# IR projector ON (if ambient light is low): emitter_enabled:=1
+```
+
+Prints continuously, e.g.:
+```
+Marker 7  X:  +12.3 mm  Y:   -4.8 mm  (Z:  512.0 mm)
+```
+
+### Topics (built for a later Pi -> Arduino bridge)
+
+| Topic                | Type                          | Description                                  |
+|----------------------|-------------------------------|----------------------------------------------|
+| `~/marker/id`        | `std_msgs/Int32`              | Detected marker ID                           |
+| `~/marker/point`     | `geometry_msgs/PointStamped`  | (x, y, z) in **meters**, Cartesian (+Y up)   |
+| `~/marker/xy_mm`     | `geometry_msgs/Point`         | (x, y, z) in **millimeters** — easy for Arduino |
+
+Fully-qualified: `/aruco_ir_depth_node/marker/{id,point,xy_mm}`.
+
+### Arduino later
+
+The Arduino link is just another **subscriber**: a small node (micro-ROS,
+rosserial, or a pyserial script) subscribes to `~/marker/xy_mm` and forwards the
+values over USB serial. The detection node needs no changes.
+
+> Uses the depth stream — on a Pi 4B this needs adequate power (powered USB 3.0
+> hub). IR+depth draws less than RGB+depth, so it may work where RGB+depth did
+> not. See TROUBLESHOOTING_PI.md.
