@@ -2,36 +2,28 @@
 """
 qr_coordinates_node.py
 ----------------------
-ROS 2 Humble node that detects QR codes in an Intel RealSense D435 color stream
-and publishes each QR code's X, Y, Z position (meters) relative to the camera,
-together with the decoded QR ID.
+ROS 2 Humble node that detects QR codes from an Intel RealSense D435 and reports
+each QR code's ID plus its position.
 
-Pipeline
-========
-  1. Subscribe (time-synchronized) to three topics from realsense2_camera:
-       - color image            (sensor_msgs/Image)
-       - aligned depth-to-color (sensor_msgs/Image, 16UC1, millimeters)
-       - color camera_info      (sensor_msgs/CameraInfo, intrinsics)
-  2. Detect & decode QR codes in the color image (OpenCV QRCodeDetector).
-  3. For each QR code, take the center pixel, read the aligned-depth value
-     there, and deproject (pixel + depth) into a 3D point in meters using the
-     pinhole model from camera_info:
-         Z = depth
-         X = (u - cx) * Z / fx
-         Y = (v - cy) * Z / fy
-  4. Publish results:
-       - ~/qr/point   geometry_msgs/PointStamped  (3D position, latest code)
-       - ~/qr/id      std_msgs/String             (decoded ID, latest code)
-       - also logged to the ROS console each detection.
+Two modes (set the "mode" parameter):
+  * "2d"   : COLOR ONLY. Publishes the QR ID and its 2D pixel position (u, v).
+             Works without depth — handy on a Pi 4B where the depth stream can't
+             start (e.g. the camera browns out without a powered USB hub).
+  * "3d"   : COLOR + ALIGNED DEPTH + camera_info. Publishes the QR ID and the
+             real 3D point (X, Y, Z) in meters, in the camera frame.
+  * "auto" : Start in 2D; if depth frames are detected, upgrade to 3D
+             automatically (default).
 
-The deprojection uses only camera_info, so this node does NOT depend on
-pyrealsense2 (handy on ARM/Raspberry Pi where pyrealsense2 has no pip wheel).
+Published topics:
+  ~/qr/id      std_msgs/String             decoded QR data (always)
+  ~/qr/pixel   geometry_msgs/PointStamped  pixel position (x=u, y=v, z=0), 2D
+  ~/qr/point   geometry_msgs/PointStamped  3D position in meters (3D only)
 
-Camera coordinate frame (REP 103 / optical frame, meters):
-    +X : right, +Y : down, +Z : forward (into the scene)
-
-Default topics assume realsense2_camera's Humble namespace /camera/camera.
-Override with ROS parameters if your launch uses a different namespace.
+3D deprojection (pinhole model from camera_info):
+    Z = depth(u, v)
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+Camera optical frame (meters): +X right, +Y down, +Z forward.
 """
 
 import numpy as np
@@ -51,16 +43,17 @@ class QrCoordinatesNode(Node):
     def __init__(self):
         super().__init__("qr_coordinates_node")
 
-        # ---- Parameters (override at launch / CLI) ----
+        # ---- Parameters ----
+        self.declare_parameter("mode", "auto")  # "2d" | "3d" | "auto"
         self.declare_parameter(
             "color_topic", "/camera/camera/color/image_raw")
         self.declare_parameter(
             "depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
         self.declare_parameter(
             "camera_info_topic", "/camera/camera/color/camera_info")
-        # Max sync time difference between color/depth/info (seconds).
         self.declare_parameter("sync_slop", 0.05)
 
+        self.mode = str(self.get_parameter("mode").value).lower()
         color_topic = self.get_parameter("color_topic").value
         depth_topic = self.get_parameter("depth_topic").value
         info_topic = self.get_parameter("camera_info_topic").value
@@ -69,89 +62,144 @@ class QrCoordinatesNode(Node):
         self.bridge = CvBridge()
         self.qr_detector = cv2.QRCodeDetector()
 
+        # Latest camera intrinsics (filled from camera_info when available).
+        self._intrinsics = None  # (fx, fy, cx, cy)
+        # Whether we've seen depth frames (for "auto" mode upgrade).
+        self._depth_seen = False
+        self._frames_seen = 0
+
         # ---- Publishers ----
-        self.point_pub = self.create_publisher(PointStamped, "~/qr/point", 10)
         self.id_pub = self.create_publisher(String, "~/qr/id", 10)
+        self.pixel_pub = self.create_publisher(PointStamped, "~/qr/pixel", 10)
+        self.point_pub = self.create_publisher(PointStamped, "~/qr/point", 10)
 
-        # ---- Time-synchronized subscribers ----
-        color_sub = message_filters.Subscriber(self, Image, color_topic)
-        depth_sub = message_filters.Subscriber(self, Image, depth_topic)
-        info_sub = message_filters.Subscriber(self, CameraInfo, info_topic)
+        # Always listen to camera_info (cheap) so 3D can work when depth exists.
+        self.create_subscription(
+            CameraInfo, info_topic, self._on_info, 10)
 
-        self.sync = message_filters.ApproximateTimeSynchronizer(
-            [color_sub, depth_sub, info_sub], queue_size=10, slop=slop
-        )
-        self.sync.registerCallback(self.on_frames)
+        want_depth = self.mode in ("3d", "auto")
+
+        if want_depth:
+            # Time-synchronized color + aligned depth.
+            color_sub = message_filters.Subscriber(self, Image, color_topic)
+            depth_sub = message_filters.Subscriber(self, Image, depth_topic)
+            self.sync = message_filters.ApproximateTimeSynchronizer(
+                [color_sub, depth_sub], queue_size=10, slop=slop)
+            self.sync.registerCallback(self._on_color_depth)
+
+        if self.mode in ("2d", "auto"):
+            # Plain color subscription — fires even if depth never arrives.
+            self.create_subscription(
+                Image, color_topic, self._on_color_only, 10)
+
+        # Heartbeat so the user gets feedback even before any QR is detected.
+        self.create_timer(3.0, self._heartbeat)
 
         self.get_logger().info(
             "qr_coordinates_node started.\n"
+            f"  mode:        {self.mode}\n"
             f"  color:       {color_topic}\n"
-            f"  depth:       {depth_topic}\n"
+            f"  depth:       {depth_topic} (used in 3d/auto)\n"
             f"  camera_info: {info_topic}\n"
-            "Point a QR code at the D435; publishing ~/qr/point and ~/qr/id."
+            "Point a QR code at the D435. Publishing ~/qr/id, ~/qr/pixel"
+            " (and ~/qr/point in 3d)."
         )
 
-    def on_frames(self, color_msg, depth_msg, info_msg):
+    # ---------------- callbacks ----------------
+
+    def _on_info(self, msg: CameraInfo):
+        k = msg.k
+        if k[0] != 0.0 and k[4] != 0.0:
+            self._intrinsics = (k[0], k[4], k[2], k[5])  # fx, fy, cx, cy
+
+    def _heartbeat(self):
+        if self._frames_seen == 0:
+            self.get_logger().warn(
+                "No color frames received yet — is the camera streaming?")
+        else:
+            depth_note = "with depth" if self._depth_seen else "color only (2D)"
+            self.get_logger().info(
+                f"Alive: {self._frames_seen} color frames seen, {depth_note}.")
+
+    def _detect(self, color_image):
+        """Return list of (id, u, v, corner_pts)."""
+        results = []
+        ok, decoded_info, points, _ = self.qr_detector.detectAndDecodeMulti(
+            color_image)
+        if not ok or points is None:
+            return results
+        h, w = color_image.shape[:2]
+        for qr_id, corner_pts in zip(decoded_info, points):
+            corner_pts = corner_pts.astype(int)
+            u = int(np.clip(int(np.mean(corner_pts[:, 0])), 0, w - 1))
+            v = int(np.clip(int(np.mean(corner_pts[:, 1])), 0, h - 1))
+            results.append((qr_id if qr_id else "(unreadable)", u, v, corner_pts))
+        return results
+
+    def _publish_id_pixel(self, header, label, u, v):
+        self.id_pub.publish(String(data=label))
+        px = PointStamped()
+        px.header = header
+        px.point.x = float(u)
+        px.point.y = float(v)
+        px.point.z = 0.0
+        self.pixel_pub.publish(px)
+
+    def _on_color_only(self, color_msg):
+        # In "auto" mode, once depth is flowing we let the synced callback do
+        # the work (3D) and skip the color-only path to avoid double-publishing.
+        if self.mode == "auto" and self._depth_seen:
+            return
         try:
             color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
-            # Aligned depth is 16UC1 in millimeters.
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"cv_bridge (color) failed: {exc}")
+            return
+        self._frames_seen += 1
+
+        for label, u, v, _ in self._detect(color):
+            self._publish_id_pixel(color_msg.header, label, u, v)
+            self.get_logger().info(
+                f"QR ID: {label!r} | pixel (u, v) = ({u}, {v})  [2D]")
+
+    def _on_color_depth(self, color_msg, depth_msg):
+        self._depth_seen = True
+        try:
+            color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
             depth = self.bridge.imgmsg_to_cv2(
                 depth_msg, desired_encoding="passthrough")
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().warn(f"cv_bridge conversion failed: {exc}")
+            self.get_logger().warn(f"cv_bridge (color+depth) failed: {exc}")
             return
+        self._frames_seen += 1
 
-        # Intrinsics from CameraInfo K = [fx 0 cx; 0 fy cy; 0 0 1]
-        k = info_msg.k
-        fx, fy = k[0], k[4]
-        cx, cy = k[2], k[5]
-        if fx == 0.0 or fy == 0.0:
-            self.get_logger().warn("camera_info has zero focal length; skipping.")
-            return
+        for label, u, v, _ in self._detect(color):
+            # Always publish ID + pixel.
+            self._publish_id_pixel(color_msg.header, label, u, v)
 
-        h, w = depth.shape[:2]
-
-        ok, decoded_info, points, _ = self.qr_detector.detectAndDecodeMulti(color)
-        if not ok or points is None:
-            return
-
-        for qr_id, corner_pts in zip(decoded_info, points):
-            corner_pts = corner_pts.astype(int)
-            u = int(np.mean(corner_pts[:, 0]))
-            v = int(np.mean(corner_pts[:, 1]))
-            u = max(0, min(u, w - 1))
-            v = max(0, min(v, h - 1))
-
-            # Depth in meters. Aligned depth image is uint16 millimeters.
-            raw = float(depth[v, u])
-            z = raw / 1000.0 if depth.dtype == np.uint16 else raw
-
-            label = qr_id if qr_id else "(unreadable)"
-
-            if z <= 0.0:
+            # Try 3D if we have depth + intrinsics.
+            if self._intrinsics is None:
                 self.get_logger().info(
-                    f"QR ID: {label!r} | no valid depth at pixel ({u}, {v})")
+                    f"QR ID: {label!r} | pixel ({u}, {v}) — awaiting camera_info")
                 continue
 
-            # Pinhole deprojection: pixel + depth -> 3D point (camera frame).
+            raw = float(depth[v, u])
+            z = raw / 1000.0 if depth.dtype == np.uint16 else raw
+            if z <= 0.0:
+                self.get_logger().info(
+                    f"QR ID: {label!r} | pixel ({u}, {v}) — no valid depth")
+                continue
+
+            fx, fy, cx, cy = self._intrinsics
             x = (u - cx) * z / fx
             y = (v - cy) * z / fy
 
-            self.get_logger().info(
-                f"QR ID: {label!r} | X: {x:+.3f} m  Y: {y:+.3f} m  Z: {z:+.3f} m")
-
-            # Publish the decoded ID.
-            id_msg = String()
-            id_msg.data = label
-            self.id_pub.publish(id_msg)
-
-            # Publish the 3D point, stamped in the color optical frame.
             pt = PointStamped()
-            pt.header = color_msg.header  # same frame_id & stamp as the color image
-            pt.point.x = float(x)
-            pt.point.y = float(y)
-            pt.point.z = float(z)
+            pt.header = color_msg.header
+            pt.point.x, pt.point.y, pt.point.z = float(x), float(y), float(z)
             self.point_pub.publish(pt)
+            self.get_logger().info(
+                f"QR ID: {label!r} | X: {x:+.3f}  Y: {y:+.3f}  Z: {z:+.3f} m  [3D]")
 
 
 def main(args=None):

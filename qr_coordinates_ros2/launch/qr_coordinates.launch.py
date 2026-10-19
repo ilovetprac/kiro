@@ -21,11 +21,31 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     start_camera = LaunchConfiguration("start_camera")
+    mode = LaunchConfiguration("mode")
+    enable_depth = LaunchConfiguration("enable_depth")
 
     declare_start_camera = DeclareLaunchArgument(
         "start_camera",
         default_value="true",
         description="Also start the realsense2_camera driver.",
+    )
+
+    # Default to 2D (color only). 2D works without a powered USB hub; 3D needs
+    # the depth stream (which on a Pi 4B requires adequate power for the IR
+    # projector — see TROUBLESHOOTING_PI.md).
+    declare_mode = DeclareLaunchArgument(
+        "mode",
+        default_value="2d",
+        description="QR position mode: '2d' (color only), '3d', or 'auto'.",
+    )
+
+    # In 2D we don't start the depth stream at all (avoids the Pi 4B depth
+    # brown-out). Set enable_depth:=true (or use mode:=3d/auto) once a powered
+    # USB hub is in place.
+    declare_enable_depth = DeclareLaunchArgument(
+        "enable_depth",
+        default_value="false",
+        description="Start the depth stream. Leave false for 2D; true for 3D.",
     )
 
     # Start the RealSense driver with depth aligned to color (so the depth
@@ -45,9 +65,9 @@ def generate_launch_description():
         ),
         condition=IfCondition(start_camera),
         launch_arguments={
-            "align_depth.enable": "true",
+            "align_depth.enable": enable_depth,
             "enable_color": "true",
-            "enable_depth": "true",
+            "enable_depth": enable_depth,
             # Modest, confirmed-supported profiles — friendly for a Pi 4B.
             # (D435 supports 640x480x30 for both color and depth.)
             "rgb_camera.color_profile": "640,480,30",
@@ -74,6 +94,7 @@ def generate_launch_description():
         name="qr_coordinates_node",
         output="screen",
         parameters=[{
+            "mode": mode,
             "color_topic": "/camera/camera/color/image_raw",
             "depth_topic": "/camera/camera/aligned_depth_to_color/image_raw",
             "camera_info_topic": "/camera/camera/color/camera_info",
@@ -83,6 +104,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         declare_start_camera,
+        declare_mode,
+        declare_enable_depth,
         realsense_launch,
         qr_node,
     ])

@@ -14,12 +14,34 @@ Pi). This ROS 2 node instead subscribes to the official **`realsense2_camera`**
 driver's topics and does the 3D deprojection from `camera_info` intrinsics — so
 it needs **no `pyrealsense2`** and fits naturally into a ROS 2 robot.
 
+## 2D vs 3D mode
+
+The node has a `mode` parameter so you can run it with or without depth:
+
+| Mode    | Needs depth? | Publishes                               | Use when |
+|---------|--------------|-----------------------------------------|----------|
+| `2d`    | No (color only) | QR **ID** + **pixel** (u, v)          | Depth can't start (e.g. Pi 4B without a powered USB hub) |
+| `3d`    | Yes          | QR **ID** + **3D point** (X, Y, Z, m)   | Depth is streaming reliably |
+| `auto`  | Optional     | 2D until depth appears, then 3D         | General use |
+
+**The launch file defaults to `2d` with the depth stream off**, so it runs on a
+Pi 4B without a powered hub. To get 3D once you have adequate power:
+
+```bash
+# 2D (default) — color only, no depth stream started:
+ros2 launch qr_coordinates_ros2 qr_coordinates.launch.py
+
+# 3D — starts depth and reports X/Y/Z (needs a powered USB hub on a Pi 4B):
+ros2 launch qr_coordinates_ros2 qr_coordinates.launch.py mode:=3d enable_depth:=true
+```
+
 ## What it publishes
 
 | Topic                               | Type                          | Description                         |
 |-------------------------------------|-------------------------------|-------------------------------------|
-| `~/qr/point`                        | `geometry_msgs/PointStamped`  | QR center in 3D (m), color frame    |
-| `~/qr/id`                           | `std_msgs/String`             | Decoded QR data / ID                |
+| `~/qr/id`                           | `std_msgs/String`             | Decoded QR data / ID (always)       |
+| `~/qr/pixel`                        | `geometry_msgs/PointStamped`  | QR center pixel (x=u, y=v, z=0)     |
+| `~/qr/point`                        | `geometry_msgs/PointStamped`  | QR center in 3D (m), color frame (3D) |
 
 It also logs each detection to the ROS console:
 ```
