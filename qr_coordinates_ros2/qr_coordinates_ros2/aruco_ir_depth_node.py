@@ -42,6 +42,7 @@ values over USB serial. No change needed here.
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 import cv2
 from cv_bridge import CvBridge
@@ -50,6 +51,15 @@ import message_filters
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PointStamped, Point
 from std_msgs.msg import Int32
+
+# realsense2_camera publishes images with sensor-data QoS (BEST_EFFORT). A
+# default (RELIABLE) subscriber silently receives nothing, which looks like
+# "no frames" even though `ros2 topic hz` (auto-matches QoS) shows 30 Hz.
+SENSOR_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 
 
 def _get_aruco_dictionary(name):
@@ -105,12 +115,16 @@ class ArucoIrDepthNode(Node):
             PointStamped, "~/marker/point", 10)
         self.xy_mm_pub = self.create_publisher(Point, "~/marker/xy_mm", 10)
 
-        # camera_info (cheap)
+        # camera_info uses default (RELIABLE) QoS in realsense2_camera.
         self.create_subscription(CameraInfo, info_topic, self._on_info, 10)
 
-        # Time-synchronized IR + aligned depth
-        ir_sub = message_filters.Subscriber(self, Image, ir_topic)
-        depth_sub = message_filters.Subscriber(self, Image, depth_topic)
+        # Time-synchronized IR + aligned depth. IMPORTANT: use sensor-data
+        # (BEST_EFFORT) QoS to match the RealSense image publishers, otherwise
+        # the subscribers receive nothing.
+        ir_sub = message_filters.Subscriber(
+            self, Image, ir_topic, qos_profile=SENSOR_QOS)
+        depth_sub = message_filters.Subscriber(
+            self, Image, depth_topic, qos_profile=SENSOR_QOS)
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [ir_sub, depth_sub], queue_size=10, slop=slop)
         self.sync.registerCallback(self._on_ir_depth)
