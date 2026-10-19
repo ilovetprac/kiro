@@ -89,7 +89,7 @@ class ArucoIrDepthNode(Node):
             "camera_info_topic", "/camera/camera/infra1/camera_info")
         self.declare_parameter("sync_slop", 0.05)
         # How many times per second to PRINT the latest X/Y to the console.
-        self.declare_parameter("print_rate_hz", 10.0)
+        self.declare_parameter("print_rate_hz", 60.0)
         # Half-size of the depth sampling window (pixels). Depth is taken as the
         # median of valid pixels in a (2*w+1)^2 patch around the marker center.
         self.declare_parameter("depth_window", 4)
@@ -149,7 +149,7 @@ class ArucoIrDepthNode(Node):
 
         # Throttled printer: detection runs at the IR frame rate (~30 Hz) and
         # keeps publishing on topics every frame, but we only PRINT the latest
-        # X/Y at print_rate_hz (default 10 Hz) to keep the console readable.
+        # X/Y at print_rate_hz (default 60 Hz).
         print_hz = float(self.get_parameter("print_rate_hz").value)
         if print_hz > 0.0:
             self.create_timer(1.0 / print_hz, self._print_latest)
@@ -175,9 +175,10 @@ class ArucoIrDepthNode(Node):
                 "No IR or depth frames yet — is the camera streaming infra1 "
                 "and aligned depth? (needs enable_infra1 + align_depth)")
             return
-        self.get_logger().info(
-            f"Alive: {self._frames_seen} IR frames, {self._depth_rx} depth "
-            f"frames, {self._detections} marker detections so far.")
+        # Diagnostic only (stream health). Not the marker ID or position.
+        self.get_logger().debug(
+            f"streams ok: {self._frames_seen} IR, {self._depth_rx} depth "
+            f"frames received.")
 
     def _detect(self, ir_gray):
         """Detect ArUco in a single-channel IR image. Returns list of
@@ -284,7 +285,7 @@ class ArucoIrDepthNode(Node):
         if res is None:
             return
         marker_id, x_mm, y_mm, z_mm = res
-        line = (f"Marker {marker_id}  X: {x_mm:+7.1f} mm  Y: {y_mm:+7.1f} mm  "
+        line = (f"ID {marker_id}  X: {x_mm:+7.1f} mm  Y: {y_mm:+7.1f} mm  "
                 f"(Z: {z_mm:7.1f} mm)")
         # 1st terminal: print at the chosen rate.
         self.get_logger().info(line)
