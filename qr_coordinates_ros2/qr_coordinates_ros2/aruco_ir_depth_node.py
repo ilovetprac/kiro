@@ -90,6 +90,9 @@ class ArucoIrDepthNode(Node):
         self.declare_parameter("sync_slop", 0.05)
         # How many times per second to PRINT the latest X/Y to the console.
         self.declare_parameter("print_rate_hz", 10.0)
+        # Half-size of the depth sampling window (pixels). Depth is taken as the
+        # median of valid pixels in a (2*w+1)^2 patch around the marker center.
+        self.declare_parameter("depth_window", 4)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         ir_topic = self.get_parameter("ir_topic").value
@@ -115,6 +118,7 @@ class ArucoIrDepthNode(Node):
         self._depth_rx = 0         # depth frames received
         self._detections = 0
         self._latest_depth = None  # most recent depth cv image
+        self._depth_window = int(self.get_parameter("depth_window").value)
         # Latest marker result for the throttled printer:
         # (marker_id, x_mm, y_mm, z_mm) or None if nothing seen recently.
         self._latest_result = None
@@ -224,16 +228,27 @@ class ArucoIrDepthNode(Node):
 
         dh, dw = depth.shape[:2]
         for marker_id, u, v in self._detect(ir):
-            # Clamp to the depth image bounds (IR and aligned depth are the
-            # same size, but be safe).
+            # Clamp to the depth image bounds.
             du = min(u, dw - 1)
             dv = min(v, dh - 1)
-            raw = float(depth[dv, du])
+
+            # Robust depth: median of the valid (non-zero) depth pixels in a
+            # small window around the marker center. A single pixel is often a
+            # depth hole even when the area around it is fine.
+            r = self._depth_window  # half-size
+            y0, y1 = max(0, dv - r), min(dh, dv + r + 1)
+            x0, x1 = max(0, du - r), min(dw, du + r + 1)
+            patch = depth[y0:y1, x0:x1].astype(np.float32)
+            valid = patch[patch > 0]
+            if valid.size == 0:
+                self.get_logger().info(
+                    f"Marker ID {marker_id}: no valid depth near center "
+                    f"({u}, {v}) — move the marker toward the image center "
+                    "(depth has no data near the edges).")
+                continue
+            raw = float(np.median(valid))
             z = raw / 1000.0 if depth.dtype == np.uint16 else raw  # meters
             if z <= 0.0:
-                self.get_logger().info(
-                    f"Marker ID {marker_id}: no valid depth at center "
-                    f"({u}, {v})")
                 continue
 
             # Deproject. Cartesian: +X right, +Y UP (flip image-down v).
