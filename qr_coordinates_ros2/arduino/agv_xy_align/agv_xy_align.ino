@@ -40,11 +40,11 @@
 const int   STEPS_PER_REV = 200;
 
 // Screw lead = mm the slide travels per ONE full screw revolution.
-// MEASURE IT: mark the slide, turn the screw exactly 10 turns, measure travel,
-// divide by 10. Then STEPS_PER_MM = STEPS_PER_REV / SCREW_LEAD_MM.
-// Example: lead 2 mm -> 200 / 2 = 100 steps/mm. (Placeholder below = 2 mm.)
-const float SCREW_LEAD_MM = 2.0;
-const float STEPS_PER_MM  = STEPS_PER_REV / SCREW_LEAD_MM;
+// This rig: 1 mm lead -> STEPS_PER_MM = 200 / 1 = 200 steps/mm.
+// If you ever change the screw/motor, re-measure: mark the slide, turn the
+// screw exactly 10 turns, measure travel, divide by 10, update this value.
+const float SCREW_LEAD_MM = 1.0;
+const float STEPS_PER_MM  = STEPS_PER_REV / SCREW_LEAD_MM;  // = 200 steps/mm
 
 // Alignment deadband: stop moving an axis once |offset| is within this (mm).
 const float DEADBAND_MM = 2.0;
@@ -57,8 +57,11 @@ const float HALF_TRAVEL_MM = 75.0;
 const bool INVERT_X = false;
 const bool INVERT_Y = false;
 
-// How many steps to nudge per control update (keeps moves small & responsive).
-const int  MAX_STEPS_PER_UPDATE = 20;
+// Max steps to move per control update (caps speed per update for smooth,
+// stable closed-loop behaviour). At 200 steps/mm: 100 steps = 0.5 mm/update;
+// at the bridge's ~20 Hz that's ~10 mm/s. Increase for faster alignment,
+// decrease if the motion overshoots or the L293D gets too hot.
+const int  MAX_STEPS_PER_UPDATE = 100;
 
 // Stepper speed (RPM) and step style.
 const int  MOTOR_RPM  = 30;
