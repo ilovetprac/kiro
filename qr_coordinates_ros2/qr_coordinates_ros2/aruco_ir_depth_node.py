@@ -99,6 +99,12 @@ class ArucoIrDepthNode(Node):
         # If True, keep publishing the last good reading when a frame has no
         # valid depth (so the stream does not stall on depth holes).
         self.declare_parameter("hold_last", True)
+        # Smoothing: exponential moving average on X/Y/Z. 0 = no smoothing
+        # (raw), 1 = frozen. 0.3 is a good balance (responsive but steady).
+        self.declare_parameter("smoothing", 0.3)
+        # Require the target marker to be seen this many consecutive frames
+        # before publishing, to reject single-frame false detections.
+        self.declare_parameter("confirm_frames", 2)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         self._target_id = int(self.get_parameter("target_id").value)
@@ -127,6 +133,11 @@ class ArucoIrDepthNode(Node):
         self._latest_depth = None  # most recent depth cv image
         self._depth_window = int(self.get_parameter("depth_window").value)
         self._hold_last = bool(self.get_parameter("hold_last").value)
+        self._smoothing = float(self.get_parameter("smoothing").value)
+        self._confirm_frames = int(self.get_parameter("confirm_frames").value)
+        # Smoothing + confirmation state.
+        self._ema = None          # (x, y, z) smoothed, meters
+        self._seen_streak = 0     # consecutive frames the target was detected
         # Latest marker result for the throttled printer:
         # (marker_id, x_mm, y_mm, z_mm) or None if nothing seen recently.
         self._latest_result = None
@@ -241,11 +252,13 @@ class ArucoIrDepthNode(Node):
         fx, fy, cx, cy = self._intrinsics
 
         dh, dw = depth.shape[:2]
+        found_target = False
         for marker_id, u, v in self._detect(ir):
             # Only act on the target marker; ignore any other ID (noise /
             # wrong markers never reach the Arduino). target_id = -1 = any.
             if self._target_id >= 0 and marker_id != self._target_id:
                 continue
+            found_target = True
             # Clamp to the depth image bounds.
             du = min(u, dw - 1)
             dv = min(v, dh - 1)
@@ -278,6 +291,23 @@ class ArucoIrDepthNode(Node):
             x = (u - cx) * z / fx          # meters, right = +
             y = -(v - cy) * z / fy         # meters, up = +  (negated)
 
+            # Confirmation: require a few consecutive detections before acting,
+            # to reject single-frame false positives.
+            self._seen_streak += 1
+            if self._seen_streak < self._confirm_frames:
+                continue
+
+            # Smoothing: exponential moving average to steady the readings.
+            a = self._smoothing
+            if self._ema is None or a <= 0.0:
+                self._ema = (x, y, z)
+            else:
+                ex, ey, ez = self._ema
+                self._ema = (a * ex + (1 - a) * x,
+                             a * ey + (1 - a) * y,
+                             a * ez + (1 - a) * z)
+            x, y, z = self._ema
+
             self._detections += 1
 
             # Publish ID
@@ -297,6 +327,12 @@ class ArucoIrDepthNode(Node):
 
             # Store latest result; the throttled timer prints it at print_rate_hz.
             self._latest_result = (marker_id, x_mm, y_mm, z_mm)
+
+        # Target not seen this frame -> reset confirmation streak and smoothing
+        # so a fresh acquisition starts clean (no stale averaged value).
+        if not found_target:
+            self._seen_streak = 0
+            self._ema = None
 
     def _print_latest(self):
         """Print the most recent marker X/Y at a fixed rate (default 10 Hz)."""
