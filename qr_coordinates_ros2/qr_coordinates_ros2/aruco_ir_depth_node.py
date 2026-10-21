@@ -77,6 +77,9 @@ class ArucoIrDepthNode(Node):
 
         # ---- Parameters ----
         self.declare_parameter("aruco_dictionary", "DICT_4X4_250")
+        # Only act on this marker ID; all other detections are ignored (noise /
+        # wrong markers never reach the Arduino). Set to -1 to accept any ID.
+        self.declare_parameter("target_id", 1)
         self.declare_parameter(
             "ir_topic", "/camera/camera/infra1/image_rect_raw")
         self.declare_parameter(
@@ -98,6 +101,7 @@ class ArucoIrDepthNode(Node):
         self.declare_parameter("hold_last", True)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
+        self._target_id = int(self.get_parameter("target_id").value)
         ir_topic = self.get_parameter("ir_topic").value
         depth_topic = self.get_parameter("depth_topic").value
         info_topic = self.get_parameter("camera_info_topic").value
@@ -158,9 +162,11 @@ class ArucoIrDepthNode(Node):
         if print_hz > 0.0:
             self.create_timer(1.0 / print_hz, self._print_latest)
 
+        target_note = ("ANY" if self._target_id < 0 else str(self._target_id))
         self.get_logger().info(
             "aruco_ir_depth_node started.\n"
             f"  dictionary:  {dict_name}\n"
+            f"  target_id:   {target_note} (other IDs ignored)\n"
             f"  ir:          {ir_topic}\n"
             f"  depth:       {depth_topic}\n"
             f"  camera_info: {info_topic}\n"
@@ -236,6 +242,10 @@ class ArucoIrDepthNode(Node):
 
         dh, dw = depth.shape[:2]
         for marker_id, u, v in self._detect(ir):
+            # Only act on the target marker; ignore any other ID (noise /
+            # wrong markers never reach the Arduino). target_id = -1 = any.
+            if self._target_id >= 0 and marker_id != self._target_id:
+                continue
             # Clamp to the depth image bounds.
             du = min(u, dw - 1)
             dv = min(v, dh - 1)
