@@ -37,6 +37,9 @@ def generate_launch_description():
     declare_aruco_dict = DeclareLaunchArgument(
         "aruco_dictionary", default_value="DICT_4X4_250",
         description="ArUco dictionary of your markers (4x4 inner grid).")
+    declare_target_id = DeclareLaunchArgument(
+        "target_id", default_value="1",
+        description="Only act on this marker ID; others ignored (-1 = any).")
     declare_emitter = DeclareLaunchArgument(
         "emitter_enabled", default_value="0",
         description="IR projector: 0 = OFF (cleaner ArUco), 1 = ON.")
@@ -80,6 +83,7 @@ def generate_launch_description():
         output="screen",
         parameters=[{
             "aruco_dictionary": aruco_dictionary,
+            "target_id": LaunchConfiguration("target_id"),
             "ir_topic": "/camera/camera/infra1/image_rect_raw",
             "depth_topic": "/camera/camera/depth/image_rect_raw",
             "camera_info_topic": "/camera/camera/infra1/camera_info",
@@ -90,6 +94,7 @@ def generate_launch_description():
     return LaunchDescription([
         declare_start_camera,
         declare_aruco_dict,
+        declare_target_id,
         declare_emitter,
         realsense_launch,
         node,
