@@ -68,7 +68,7 @@ const bool DEBUG_ECHO = true;
 // SAFETY: set false to TEST THE BRIDGE WITH NO MOTOR MOTION. The Arduino still
 // receives and echoes X,Y but does not drive the steppers. Set true only once
 // the link is verified AND the slides are centred with 24V connected.
-const bool MOTORS_ENABLED = false;
+const bool MOTORS_ENABLED = true;
 
 // Max steps to move per control update (caps speed per update for smooth,
 // stable closed-loop behaviour). At 200 steps/mm: 100 steps = 0.5 mm/update;
