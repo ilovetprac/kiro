@@ -58,8 +58,11 @@ const float HALF_TRAVEL_MM = 75.0;
 // (camera-on-mover). To cancel an offset, the assembly must move TOWARD the
 // marker, which is the opposite of the fixed-camera default. If the bench test
 // shows an axis still moving the wrong way, toggle that axis back to false.
-const bool INVERT_X = true;
-const bool INVERT_Y = true;
+// Set FALSE per bench test: with both true the slide drove AWAY from the
+// marker (+X moved left, +Y moved down). False makes the assembly chase the
+// marker (+X -> move right/toward it, +Y -> up/toward it) so the offset shrinks.
+const bool INVERT_X = false;
+const bool INVERT_Y = false;
 
 // DEBUG: echo every received "X,Y" back over serial so you can verify the
 // Pi -> Arduino link in the Serial Monitor / `arduino-cli monitor`.
