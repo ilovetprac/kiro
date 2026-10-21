@@ -57,6 +57,15 @@ const float HALF_TRAVEL_MM = 75.0;
 const bool INVERT_X = false;
 const bool INVERT_Y = false;
 
+// DEBUG: echo every received "X,Y" back over serial so you can verify the
+// Pi -> Arduino link in the Serial Monitor / `arduino-cli monitor`.
+const bool DEBUG_ECHO = true;
+
+// SAFETY: set false to TEST THE BRIDGE WITH NO MOTOR MOTION. The Arduino still
+// receives and echoes X,Y but does not drive the steppers. Set true only once
+// the link is verified AND the slides are centred with 24V connected.
+const bool MOTORS_ENABLED = false;
+
 // Max steps to move per control update (caps speed per update for smooth,
 // stable closed-loop behaviour). At 200 steps/mm: 100 steps = 0.5 mm/update;
 // at the bridge's ~20 Hz that's ~10 mm/s. Increase for faster alignment,
@@ -120,6 +129,16 @@ void handleLine(const String &line) {
   if (comma < 0) return;                       // malformed
   float x = line.substring(0, comma).toFloat();
   float y = line.substring(comma + 1).toFloat();
+
+  if (DEBUG_ECHO) {
+    Serial.print("got X=");  Serial.print(x, 1);
+    Serial.print(" Y=");     Serial.print(y, 1);
+    Serial.print(MOTORS_ENABLED ? "  [moving]" : "  [motors OFF]");
+    Serial.println();
+  }
+
+  if (!MOTORS_ENABLED) return;                 // bridge-test mode: no motion
+
   driveAxis(motorX, x, posX, INVERT_X);
   driveAxis(motorY, y, posY, INVERT_Y);
 }
