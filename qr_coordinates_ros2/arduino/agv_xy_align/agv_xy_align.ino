@@ -80,7 +80,10 @@ const bool MOTORS_ENABLED = true;
 const int  MAX_STEPS_PER_UPDATE = 100;
 
 // Stepper speed (RPM) and step style.
-const int  MOTOR_RPM  = 30;
+// Faster rotation. The L293D shield steps in software (no acceleration), so
+// too high an RPM makes the stepper STALL/skip instead of going faster. 60 is
+// a safe faster value for a 24V NEMA 11; lower it if the motor buzzes/stalls.
+const int  MOTOR_RPM  = 60;
 // FULL step = most torque; DOUBLE = more torque; INTERLEAVE = smoother/slower.
 #define STEP_STYLE DOUBLE
 
