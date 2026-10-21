@@ -54,8 +54,12 @@ const float DEADBAND_MM = 2.0;
 const float HALF_TRAVEL_MM = 75.0;
 
 // Flip these if a motor drives the wrong way.
-const bool INVERT_X = false;
-const bool INVERT_Y = false;
+// Set TRUE here because the camera + slides are mounted TOGETHER on the AGV
+// (camera-on-mover). To cancel an offset, the assembly must move TOWARD the
+// marker, which is the opposite of the fixed-camera default. If the bench test
+// shows an axis still moving the wrong way, toggle that axis back to false.
+const bool INVERT_X = true;
+const bool INVERT_Y = true;
 
 // DEBUG: echo every received "X,Y" back over serial so you can verify the
 // Pi -> Arduino link in the Serial Monitor / `arduino-cli monitor`.
