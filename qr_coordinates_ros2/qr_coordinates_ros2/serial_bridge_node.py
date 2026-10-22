@@ -46,14 +46,20 @@ class SerialBridgeNode(Node):
         self.declare_parameter("baud", 115200)
         self.declare_parameter("send_rate_hz", 20.0)
         self.declare_parameter("deadband_mm", 1.0)
+        # If no marker message arrives within this long (seconds), treat the
+        # marker as LOST and send a STOP command so the Arduino halts at once.
+        self.declare_parameter("lost_timeout_s", 0.2)
 
         topic = self.get_parameter("marker_topic").value
         self.port = self.get_parameter("serial_port").value
         self.baud = int(self.get_parameter("baud").value)
         rate = float(self.get_parameter("send_rate_hz").value)
         self.deadband = float(self.get_parameter("deadband_mm").value)
+        self.lost_timeout = float(self.get_parameter("lost_timeout_s").value)
 
-        self._latest = None   # (x_mm, y_mm)
+        self._latest = None       # (x_mm, y_mm)
+        self._last_rx = 0.0       # time (s) of the last marker message
+        self._stopped = False     # whether we've already sent STOP
         self._ser = None
 
         if serial is None:
@@ -86,25 +92,21 @@ class SerialBridgeNode(Node):
                 "user is in the 'dialout' group.")
 
     def _on_marker(self, msg: Point):
-        # msg.x, msg.y are millimeters (z ignored by design).
+        # msg.x, msg.y are millimeters (z ignored by design). The vision node
+        # only publishes this when the TARGET marker (ID 1) is detected,
+        # confirmed, and in range — so receiving it means "marker present".
         self._latest = (float(msg.x), float(msg.y))
+        self._last_rx = self._now()
+        self._stopped = False
 
-    def _send(self):
-        if self._latest is None:
-            return
+    def _now(self):
+        return self.get_clock().now().nanoseconds / 1e9
+
+    def _write(self, line):
         if self._ser is None:
-            # Try to reopen (e.g. Arduino was plugged in after start).
             self._open_serial()
             if self._ser is None:
                 return
-
-        x, y = self._latest
-        # Optional: skip sending if within deadband on both axes.
-        if abs(x) < self.deadband and abs(y) < self.deadband:
-            line = "0,0\n"
-        else:
-            line = f"{x:.1f},{y:.1f}\n"
-
         try:
             self._ser.write(line.encode("ascii"))
         except Exception as exc:  # noqa: BLE001
@@ -114,6 +116,19 @@ class SerialBridgeNode(Node):
             except Exception:  # noqa: BLE001
                 pass
             self._ser = None
+
+    def _send(self):
+        # Marker LOST (no fresh message within the timeout) -> STOP immediately.
+        if self._latest is None or (self._now() - self._last_rx) > self.lost_timeout:
+            if not self._stopped:
+                self._write("S\n")           # STOP command -> Arduino halts
+                self._stopped = True
+                self.get_logger().info("Marker lost -> STOP sent.")
+            return
+
+        # Marker present -> send the latest X,Y (mm) to chase.
+        x, y = self._latest
+        self._write(f"{x:.1f},{y:.1f}\n")
 
 
 def main(args=None):

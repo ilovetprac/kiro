@@ -168,6 +168,16 @@ bool chaseAxis(AF_Stepper &motor, float offset_mm, long &pos, bool invert) {
 // Serial line -> just UPDATE the latest target + latch state. No stepping here,
 // so the newest reading always wins and the loop chases the latest value.
 void handleLine(const String &line) {
+  // STOP command: marker lost -> halt motors immediately and drop the target.
+  if (line.length() > 0 && (line[0] == 'S' || line[0] == 's')) {
+    haveTarget = false;                        // loop() won't step
+    inBandCount = 0;
+    motorX.release();                          // stop at once (coils off)
+    motorY.release();
+    if (DEBUG_ECHO) Serial.println("STOP: marker lost, motors halted.");
+    return;
+  }
+
   int comma = line.indexOf(',');
   if (comma < 0) return;                       // malformed
   float x = line.substring(0, comma).toFloat();
@@ -175,7 +185,7 @@ void handleLine(const String &line) {
 
   latestX = x;                                 // newest target (old plan dropped)
   latestY = y;
-  haveTarget = true;
+  haveTarget = true;                           // marker present -> loop() chases
 
   bool inBand = (fabs(x) <= DEADBAND_MM && fabs(y) <= DEADBAND_MM);
 
