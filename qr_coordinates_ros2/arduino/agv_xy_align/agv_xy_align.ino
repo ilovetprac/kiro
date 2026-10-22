@@ -111,6 +111,13 @@ AF_Stepper motorY(STEPS_PER_REV, 2);
 long posX = 0;
 long posY = 0;
 
+// LATEST target offset (mm) from the most recent serial reading. The main loop
+// continuously chases THIS value, so a newer reading immediately redirects the
+// motion — any previously-planned move is abandoned ("follow the latest").
+volatile float latestX = 0.0;
+volatile float latestY = 0.0;
+bool haveTarget = false;   // a valid reading has been received at least once
+
 // Alignment-latch state.
 bool aligned = false;      // true once centred -> motors held/stopped
 int  inBandCount = 0;      // consecutive updates with both axes in deadband
@@ -126,56 +133,60 @@ void setup() {
   Serial.println("agv_xy_align ready. Send 'X,Y' in mm. Centre slides first.");
 }
 
-// Move one axis toward a target offset of 0. FAST when far, FINE when close,
-// for maximum approach speed while settling precisely into the 1 mm deadband.
-// offset_mm > 0 means the marker is right/up; we move to reduce it.
-void driveAxis(AF_Stepper &motor, float offset_mm, long &pos, bool invert) {
-  if (fabs(offset_mm) <= DEADBAND_MM) return;   // within 1 mm -> hold
+// Take ONE small increment toward cancelling offset_mm on this axis. Called
+// repeatedly from loop(). Small, non-blocking moves mean serial is re-read
+// between increments, so a new target instantly redirects the motion (the old
+// planned move is abandoned). Returns true if this axis still needs to move.
+bool chaseAxis(AF_Stepper &motor, float offset_mm, long &pos, bool invert) {
+  if (fabs(offset_mm) <= DEADBAND_MM) return false;   // within 1 mm -> hold
 
-  // Choose speed + max step size by distance to target.
+  // FAST when far, FINE when close (for speed + a precise, no-overshoot finish).
   bool fine = (fabs(offset_mm) <= FINE_ZONE_MM);
-  int rpm   = fine ? FINE_RPM : FAST_RPM;
-  int cap   = fine ? FINE_MAX_STEPS : FAST_MAX_STEPS;
-  motor.setSpeed(rpm);
+  motor.setSpeed(fine ? FINE_RPM : FAST_RPM);
+  int cap = fine ? FINE_MAX_STEPS : FAST_MAX_STEPS;
 
-  // Steps needed to cancel the current offset, capped for this mode.
+  // Steps to cancel the offset, capped to a small increment per call.
   long want = (long)(offset_mm * STEPS_PER_MM);
   if (want >  cap) want =  cap;
   if (want < -cap) want = -cap;
 
-  // Direction: reduce a positive offset. Optionally invert for wiring.
   long delta = -want;                 // move opposite to the offset
   if (invert) delta = -delta;
 
   // Clamp to the +/- travel limit (no end-stops).
   long target = pos + delta;
-  if (target >  STEP_LIMIT) { delta = STEP_LIMIT - pos; }
-  if (target < -STEP_LIMIT) { delta = -STEP_LIMIT - pos; }
-  if (delta == 0) return;
+  if (target >  STEP_LIMIT) delta = STEP_LIMIT - pos;
+  if (target < -STEP_LIMIT) delta = -STEP_LIMIT - pos;
+  if (delta == 0) return false;
 
   if (delta > 0) motor.step(delta, FORWARD, STEP_STYLE);
   else           motor.step(-delta, BACKWARD, STEP_STYLE);
   pos += delta;
+  return true;
 }
 
+// Serial line -> just UPDATE the latest target + latch state. No stepping here,
+// so the newest reading always wins and the loop chases the latest value.
 void handleLine(const String &line) {
   int comma = line.indexOf(',');
   if (comma < 0) return;                       // malformed
   float x = line.substring(0, comma).toFloat();
   float y = line.substring(comma + 1).toFloat();
 
+  latestX = x;                                 // newest target (old plan dropped)
+  latestY = y;
+  haveTarget = true;
+
   bool inBand = (fabs(x) <= DEADBAND_MM && fabs(y) <= DEADBAND_MM);
 
   // --- Alignment latch state machine ---
   if (aligned) {
-    // Already aligned: hold still. Only re-arm if the marker drifts well out.
     if (fabs(x) > REARM_MM || fabs(y) > REARM_MM) {
       aligned = false;
       inBandCount = 0;
       Serial.println("REARM: marker moved, resuming alignment.");
     }
   } else {
-    // Aligning: count consecutive in-deadband updates to confirm alignment.
     if (inBand) {
       inBandCount++;
       if (inBandCount >= ALIGN_CONFIRM) {
@@ -193,18 +204,13 @@ void handleLine(const String &line) {
     Serial.print(" Y=");     Serial.print(y, 1);
     if (!MOTORS_ENABLED)   Serial.print("  [motors OFF]");
     else if (aligned)      Serial.print("  [ALIGNED - stopped]");
-    else                   Serial.print("  [aligning]");
+    else                   Serial.print("  [chasing]");
     Serial.println();
   }
-
-  if (!MOTORS_ENABLED) return;                 // bridge-test mode: no motion
-  if (aligned) return;                         // latched: motors stopped
-
-  driveAxis(motorX, x, posX, INVERT_X);
-  driveAxis(motorY, y, posY, INVERT_Y);
 }
 
 void loop() {
+  // 1) Drain serial so the LATEST target is always current before we step.
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
     if (c == '\n') {
@@ -214,5 +220,11 @@ void loop() {
       rxBuf += c;
       if (rxBuf.length() > 40) rxBuf = "";     // overflow guard
     }
+  }
+
+  // 2) Take one small increment toward the LATEST target (unless held).
+  if (MOTORS_ENABLED && haveTarget && !aligned) {
+    chaseAxis(motorX, latestX, posX, INVERT_X);
+    chaseAxis(motorY, latestY, posY, INVERT_Y);
   }
 }
