@@ -101,7 +101,7 @@ class ArucoIrDepthNode(Node):
         self.declare_parameter("hold_last", True)
         # Smoothing: exponential moving average on X/Y/Z. 0 = no smoothing
         # (raw), 1 = frozen. 0.3 is a good balance (responsive but steady).
-        self.declare_parameter("smoothing", 0.3)
+        self.declare_parameter("smoothing", 0.1)
         # Clamp published X/Y to +/- this many mm. The slide is 150 mm (+/-75);
         # 70 keeps a safety margin so commands never reach the hard ends.
         self.declare_parameter("max_offset_mm", 70.0)
