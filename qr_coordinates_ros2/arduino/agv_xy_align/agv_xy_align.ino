@@ -47,7 +47,18 @@ const float SCREW_LEAD_MM = 1.0;
 const float STEPS_PER_MM  = STEPS_PER_REV / SCREW_LEAD_MM;  // = 200 steps/mm
 
 // Alignment deadband: stop moving an axis once |offset| is within this (mm).
-const float DEADBAND_MM = 2.0;
+// 1.0 mm = the required precision.
+const float DEADBAND_MM = 1.0;
+
+// Two-speed control for "fast but precise":
+//   - When |offset| > FINE_ZONE_MM  -> move FAST (FAST_RPM, big steps).
+//   - When |offset| <= FINE_ZONE_MM -> move SLOW (FINE_RPM, tiny steps) so it
+//     settles into the 1 mm deadband without overshooting.
+const float FINE_ZONE_MM = 5.0;   // distance from target to switch to fine mode
+const int   FAST_RPM     = 90;    // coarse approach speed (lower if it stalls)
+const int   FINE_RPM     = 25;    // precise approach speed near target
+const int   FAST_MAX_STEPS = 200; // max steps/update in fast mode (1.0 mm)
+const int   FINE_MAX_STEPS = 10;  // max steps/update in fine mode (0.05 mm)
 
 // Max travel from the power-on centre, each direction (mm). 150 mm stroke ->
 // +/- 75 mm.
@@ -73,18 +84,10 @@ const bool DEBUG_ECHO = true;
 // the link is verified AND the slides are centred with 24V connected.
 const bool MOTORS_ENABLED = true;
 
-// Max steps to move per control update (caps speed per update for smooth,
-// stable closed-loop behaviour). At 200 steps/mm: 100 steps = 0.5 mm/update;
-// at the bridge's ~20 Hz that's ~10 mm/s. Increase for faster alignment,
-// decrease if the motion overshoots or the L293D gets too hot.
-const int  MAX_STEPS_PER_UPDATE = 200;
-
-// Stepper speed (RPM) and step style.
-// Faster rotation. The L293D shield steps in software (no acceleration), so
-// too high an RPM makes the stepper STALL/skip instead of going faster. 60 is
-// a safe faster value for a 24V NEMA 11; lower it if the motor buzzes/stalls.
-const int  MOTOR_RPM  = 90;
-// FULL step = most torque; DOUBLE = more torque; INTERLEAVE = smoother/slower.
+// Step style. FULL = most torque; DOUBLE = more torque; INTERLEAVE = smoother.
+// The L293D shield steps in software (no acceleration), so too high an RPM
+// makes the stepper STALL/skip instead of going faster (which ruins precision
+// via lost steps). If FAST_RPM stalls, lower it until motion is reliable.
 #define STEP_STYLE DOUBLE
 
 // ALIGNMENT LATCH: once both X and Y stay within the deadband for this many
@@ -118,21 +121,27 @@ String rxBuf = "";
 
 void setup() {
   Serial.begin(115200);
-  motorX.setSpeed(MOTOR_RPM);
-  motorY.setSpeed(MOTOR_RPM);
+  motorX.setSpeed(FAST_RPM);
+  motorY.setSpeed(FAST_RPM);
   Serial.println("agv_xy_align ready. Send 'X,Y' in mm. Centre slides first.");
 }
 
-// Move one axis toward a target offset of 0, by at most MAX_STEPS_PER_UPDATE.
+// Move one axis toward a target offset of 0. FAST when far, FINE when close,
+// for maximum approach speed while settling precisely into the 1 mm deadband.
 // offset_mm > 0 means the marker is right/up; we move to reduce it.
 void driveAxis(AF_Stepper &motor, float offset_mm, long &pos, bool invert) {
-  if (fabs(offset_mm) <= DEADBAND_MM) return;   // close enough -> hold
+  if (fabs(offset_mm) <= DEADBAND_MM) return;   // within 1 mm -> hold
 
-  // Steps needed to cancel the current offset.
+  // Choose speed + max step size by distance to target.
+  bool fine = (fabs(offset_mm) <= FINE_ZONE_MM);
+  int rpm   = fine ? FINE_RPM : FAST_RPM;
+  int cap   = fine ? FINE_MAX_STEPS : FAST_MAX_STEPS;
+  motor.setSpeed(rpm);
+
+  // Steps needed to cancel the current offset, capped for this mode.
   long want = (long)(offset_mm * STEPS_PER_MM);
-  // Limit per-update movement for smooth closed-loop behaviour.
-  if (want >  MAX_STEPS_PER_UPDATE) want =  MAX_STEPS_PER_UPDATE;
-  if (want < -MAX_STEPS_PER_UPDATE) want = -MAX_STEPS_PER_UPDATE;
+  if (want >  cap) want =  cap;
+  if (want < -cap) want = -cap;
 
   // Direction: reduce a positive offset. Optionally invert for wiring.
   long delta = -want;                 // move opposite to the offset
