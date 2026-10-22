@@ -98,6 +98,8 @@ class ArucoIrDepthNode(Node):
         self.declare_parameter("depth_window", 20)
         # If True, keep publishing the last good reading when a frame has no
         # valid depth (so the stream does not stall on depth holes).
+        # (Retained for compatibility; output no longer persists after the
+        # marker is lost — see the found_target handling below.)
         self.declare_parameter("hold_last", True)
         # Smoothing: exponential moving average on X/Y/Z. 0 = no smoothing
         # (raw), 1 = frozen. 0.3 is a good balance (responsive but steady).
@@ -347,11 +349,14 @@ class ArucoIrDepthNode(Node):
             # Store latest result; the throttled timer prints it at print_rate_hz.
             self._latest_result = (marker_id, x_mm, y_mm, z_mm)
 
-        # Target not seen this frame -> reset confirmation streak and smoothing
-        # so a fresh acquisition starts clean (no stale averaged value).
+        # Target not seen this frame -> STOP emitting. Clear the confirmation
+        # streak, smoothing, AND the latest result so the printer/topic go
+        # silent (no stale repeat). The bridge then times out and sends STOP,
+        # halting the motors immediately when the marker is removed.
         if not found_target:
             self._seen_streak = 0
             self._ema = None
+            self._latest_result = None
 
     def _print_latest(self):
         """Print the most recent marker X/Y at a fixed rate (default 10 Hz)."""
@@ -367,10 +372,10 @@ class ArucoIrDepthNode(Node):
         # ~/marker/info` shows id + X/Y/Z together at the print rate.
         self.info_pub.publish(String(
             data=f"id={marker_id} x={x_mm:.1f} y={y_mm:.1f} z={z_mm:.1f} (mm)"))
-        # With hold_last, keep emitting the last good value for a steady stream
-        # across brief depth holes. Otherwise clear so stale values don't repeat.
-        if not self._hold_last:
-            self._latest_result = None
+        # Clear after emitting so a value is never repeated: each printed line
+        # corresponds to a fresh detection. When the marker is removed the
+        # detection loop stops setting _latest_result, so output goes silent.
+        self._latest_result = None
 
 
 def main(args=None):
