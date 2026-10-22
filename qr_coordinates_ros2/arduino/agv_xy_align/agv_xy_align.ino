@@ -87,6 +87,17 @@ const int  MOTOR_RPM  = 90;
 // FULL step = most torque; DOUBLE = more torque; INTERLEAVE = smoother/slower.
 #define STEP_STYLE DOUBLE
 
+// ALIGNMENT LATCH: once both X and Y stay within the deadband for this many
+// consecutive updates, declare ALIGNED and STOP driving the motors (hold).
+const int   ALIGN_CONFIRM = 5;
+// Re-arm (resume aligning) only if the marker drifts back out beyond this many
+// mm on either axis — prevents motor twitching on small post-align noise.
+const float REARM_MM = 6.0;
+// Release the motor coils when aligned, so they stop drawing current and the
+// L293D cools. Set false to keep the coils energised (holding torque) if the
+// slide tends to drift. (Leadscrews are usually self-locking, so release is OK.)
+const bool  RELEASE_WHEN_ALIGNED = true;
+
 // ---------------------------------------------------------------------
 
 // X stepper on shield port 1 (M1/M2), Y on port 2 (M3/M4).
@@ -96,6 +107,10 @@ AF_Stepper motorY(STEPS_PER_REV, 2);
 // Current slide position in steps from the power-on centre.
 long posX = 0;
 long posY = 0;
+
+// Alignment-latch state.
+bool aligned = false;      // true once centred -> motors held/stopped
+int  inBandCount = 0;      // consecutive updates with both axes in deadband
 
 const long STEP_LIMIT = (long)(HALF_TRAVEL_MM * STEPS_PER_MM);
 
@@ -140,14 +155,41 @@ void handleLine(const String &line) {
   float x = line.substring(0, comma).toFloat();
   float y = line.substring(comma + 1).toFloat();
 
+  bool inBand = (fabs(x) <= DEADBAND_MM && fabs(y) <= DEADBAND_MM);
+
+  // --- Alignment latch state machine ---
+  if (aligned) {
+    // Already aligned: hold still. Only re-arm if the marker drifts well out.
+    if (fabs(x) > REARM_MM || fabs(y) > REARM_MM) {
+      aligned = false;
+      inBandCount = 0;
+      Serial.println("REARM: marker moved, resuming alignment.");
+    }
+  } else {
+    // Aligning: count consecutive in-deadband updates to confirm alignment.
+    if (inBand) {
+      inBandCount++;
+      if (inBandCount >= ALIGN_CONFIRM) {
+        aligned = true;
+        if (RELEASE_WHEN_ALIGNED) { motorX.release(); motorY.release(); }
+        Serial.println("ALIGNED: target centred, motors stopped.");
+      }
+    } else {
+      inBandCount = 0;
+    }
+  }
+
   if (DEBUG_ECHO) {
     Serial.print("got X=");  Serial.print(x, 1);
     Serial.print(" Y=");     Serial.print(y, 1);
-    Serial.print(MOTORS_ENABLED ? "  [moving]" : "  [motors OFF]");
+    if (!MOTORS_ENABLED)   Serial.print("  [motors OFF]");
+    else if (aligned)      Serial.print("  [ALIGNED - stopped]");
+    else                   Serial.print("  [aligning]");
     Serial.println();
   }
 
   if (!MOTORS_ENABLED) return;                 // bridge-test mode: no motion
+  if (aligned) return;                         // latched: motors stopped
 
   driveAxis(motorX, x, posX, INVERT_X);
   driveAxis(motorY, y, posY, INVERT_Y);
