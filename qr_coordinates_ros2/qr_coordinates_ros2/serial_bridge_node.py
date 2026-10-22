@@ -48,7 +48,10 @@ class SerialBridgeNode(Node):
         self.declare_parameter("deadband_mm", 1.0)
         # If no marker message arrives within this long (seconds), treat the
         # marker as LOST and send a STOP command so the Arduino halts at once.
-        self.declare_parameter("lost_timeout_s", 0.2)
+        # 0.5s tolerates brief detection flicker (a few dropped frames) without
+        # firing STOP — prevents rapid stop/go stutter — while still halting
+        # promptly when the marker is genuinely removed.
+        self.declare_parameter("lost_timeout_s", 0.5)
 
         topic = self.get_parameter("marker_topic").value
         self.port = self.get_parameter("serial_port").value
