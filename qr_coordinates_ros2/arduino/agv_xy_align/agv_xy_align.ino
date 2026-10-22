@@ -172,13 +172,14 @@ bool chaseAxis(AF_Stepper &motor, float offset_mm, long &pos, bool invert) {
 // Serial line -> just UPDATE the latest target + latch state. No stepping here,
 // so the newest reading always wins and the loop chases the latest value.
 void handleLine(const String &line) {
-  // STOP command: marker lost -> halt motors immediately and drop the target.
+  // STOP command: marker lost -> stop STEPPING but HOLD position. We do NOT
+  // release the coils here: releasing then re-energising on the next reading
+  // caused rapid on/off buzzing when detection flickers. Coils stay energised
+  // (holding) so brief dropouts are silent; they only release when ALIGNED.
   if (line.length() > 0 && (line[0] == 'S' || line[0] == 's')) {
-    haveTarget = false;                        // loop() won't step
+    haveTarget = false;                        // loop() won't step (holds still)
     inBandCount = 0;
-    motorX.release();                          // stop at once (coils off)
-    motorY.release();
-    if (DEBUG_ECHO) Serial.println("STOP: marker lost, motors halted.");
+    if (DEBUG_ECHO) Serial.println("STOP: marker lost, holding position.");
     return;
   }
 
