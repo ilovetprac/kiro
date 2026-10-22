@@ -77,13 +77,13 @@ const bool MOTORS_ENABLED = true;
 // stable closed-loop behaviour). At 200 steps/mm: 100 steps = 0.5 mm/update;
 // at the bridge's ~20 Hz that's ~10 mm/s. Increase for faster alignment,
 // decrease if the motion overshoots or the L293D gets too hot.
-const int  MAX_STEPS_PER_UPDATE = 100;
+const int  MAX_STEPS_PER_UPDATE = 200;
 
 // Stepper speed (RPM) and step style.
 // Faster rotation. The L293D shield steps in software (no acceleration), so
 // too high an RPM makes the stepper STALL/skip instead of going faster. 60 is
 // a safe faster value for a 24V NEMA 11; lower it if the motor buzzes/stalls.
-const int  MOTOR_RPM  = 60;
+const int  MOTOR_RPM  = 90;
 // FULL step = most torque; DOUBLE = more torque; INTERLEAVE = smoother/slower.
 #define STEP_STYLE DOUBLE
 
