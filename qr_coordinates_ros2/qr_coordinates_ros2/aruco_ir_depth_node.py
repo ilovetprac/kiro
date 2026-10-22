@@ -102,6 +102,9 @@ class ArucoIrDepthNode(Node):
         # Smoothing: exponential moving average on X/Y/Z. 0 = no smoothing
         # (raw), 1 = frozen. 0.3 is a good balance (responsive but steady).
         self.declare_parameter("smoothing", 0.3)
+        # Clamp published X/Y to +/- this many mm. The slide is 150 mm (+/-75);
+        # 70 keeps a safety margin so commands never reach the hard ends.
+        self.declare_parameter("max_offset_mm", 70.0)
         # Require the target marker to be seen this many consecutive frames
         # before publishing, to reject single-frame false detections.
         self.declare_parameter("confirm_frames", 2)
@@ -134,6 +137,7 @@ class ArucoIrDepthNode(Node):
         self._depth_window = int(self.get_parameter("depth_window").value)
         self._hold_last = bool(self.get_parameter("hold_last").value)
         self._smoothing = float(self.get_parameter("smoothing").value)
+        self._max_offset_mm = float(self.get_parameter("max_offset_mm").value)
         self._confirm_frames = int(self.get_parameter("confirm_frames").value)
         # Smoothing + confirmation state.
         self._ema = None          # (x, y, z) smoothed, meters
@@ -307,6 +311,13 @@ class ArucoIrDepthNode(Node):
                              a * ey + (1 - a) * y,
                              a * ez + (1 - a) * z)
             x, y, z = self._ema
+
+            # Clamp X/Y to the safe travel range (+/- max_offset_mm) so commands
+            # never drive the 150 mm slide to its hard ends. Applied in meters
+            # so every published topic is consistent.
+            m_m = self._max_offset_mm / 1000.0
+            x = max(-m_m, min(m_m, x))
+            y = max(-m_m, min(m_m, y))
 
             self._detections += 1
 

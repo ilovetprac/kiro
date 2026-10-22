@@ -61,8 +61,8 @@ const float HALF_TRAVEL_MM = 75.0;
 // Set FALSE per bench test: with both true the slide drove AWAY from the
 // marker (+X moved left, +Y moved down). False makes the assembly chase the
 // marker (+X -> move right/toward it, +Y -> up/toward it) so the offset shrinks.
-const bool INVERT_X = false;
-const bool INVERT_Y = false;
+const bool INVERT_X = true;
+const bool INVERT_Y = true;
 
 // DEBUG: echo every received "X,Y" back over serial so you can verify the
 // Pi -> Arduino link in the Serial Monitor / `arduino-cli monitor`.
