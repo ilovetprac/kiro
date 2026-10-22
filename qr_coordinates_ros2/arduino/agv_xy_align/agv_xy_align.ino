@@ -57,8 +57,12 @@ const float DEADBAND_MM = 1.0;
 const float FINE_ZONE_MM = 5.0;   // distance from target to switch to fine mode
 const int   FAST_RPM     = 75;    // coarse approach speed (lower if it stalls)
 const int   FINE_RPM     = 25;    // precise approach speed near target
-const int   FAST_MAX_STEPS = 200; // max steps/update in fast mode (1.0 mm)
-const int   FINE_MAX_STEPS = 10;  // max steps/update in fine mode (0.05 mm)
+// Max steps PER loop() pass. Keep SMALL: motor.step() blocks while running, so
+// a big value (e.g. 200 = 1 full rev) makes the motor lurch ~360 deg then
+// pause while serial is re-read. Small increments = smooth, continuous motion
+// that re-reads the latest target between every little move.
+const int   FAST_MAX_STEPS = 20;  // 0.10 mm per pass (fast approach)
+const int   FINE_MAX_STEPS = 4;   // 0.02 mm per pass (precise settle)
 
 // Max travel from the power-on centre, each direction (mm). 150 mm stroke ->
 // +/- 75 mm.
