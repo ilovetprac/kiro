@@ -102,8 +102,9 @@ class ArucoIrDepthNode(Node):
         # Smoothing: exponential moving average on X/Y/Z. 0 = no smoothing
         # (raw), 1 = frozen. 0.3 is a good balance (responsive but steady).
         self.declare_parameter("smoothing", 0.1)
-        # Clamp published X/Y to +/- this many mm. The slide is 150 mm (+/-75);
-        # 70 keeps a safety margin so commands never reach the hard ends.
+        # If the marker is detected beyond +/- this many mm on either axis, the
+        # reading is REJECTED (no motion) rather than driving toward the limit.
+        # Slide is 150 mm (+/-75); 70 keeps a safety margin.
         self.declare_parameter("max_offset_mm", 70.0)
         # Require the target marker to be seen this many consecutive frames
         # before publishing, to reject single-frame false detections.
@@ -295,6 +296,20 @@ class ArucoIrDepthNode(Node):
             x = (u - cx) * z / fx          # meters, right = +
             y = -(v - cy) * z / fy         # meters, up = +  (negated)
 
+            # REJECT out-of-range: if either axis exceeds +/- max_offset_mm,
+            # do NOT move at all (don't publish). A far/spurious detection must
+            # not drive the 150 mm slide toward its hard end. Checked on the RAW
+            # offset, before smoothing, so a large value can't enter the EMA.
+            m_m = self._max_offset_mm / 1000.0
+            if abs(x) > m_m or abs(y) > m_m:
+                self._oor_count = getattr(self, "_oor_count", 0) + 1
+                if self._oor_count % 30 == 1:
+                    self.get_logger().warn(
+                        f"Marker out of range (|X|={x*1000:.0f} or "
+                        f"|Y|={y*1000:.0f} mm > {self._max_offset_mm:.0f}) "
+                        "— ignoring, not moving.")
+                continue
+
             # Confirmation: require a few consecutive detections before acting,
             # to reject single-frame false positives.
             self._seen_streak += 1
@@ -311,13 +326,6 @@ class ArucoIrDepthNode(Node):
                              a * ey + (1 - a) * y,
                              a * ez + (1 - a) * z)
             x, y, z = self._ema
-
-            # Clamp X/Y to the safe travel range (+/- max_offset_mm) so commands
-            # never drive the 150 mm slide to its hard ends. Applied in meters
-            # so every published topic is consistent.
-            m_m = self._max_offset_mm / 1000.0
-            x = max(-m_m, min(m_m, x))
-            y = max(-m_m, min(m_m, y))
 
             self._detections += 1
 
