@@ -36,9 +36,10 @@ through the common-cathode signal ground as shown.
 
 ## Software setup
 ```bash
-sudo apt install -y pigpio python3-pigpio
-sudo systemctl enable --now pigpiod        # hardware-timed pulses
+sudo apt install -y python3-lgpio        # kernel gpiochip interface, no daemon
 ```
+(The Pi user must be able to access /dev/gpiochip0 — usually via the `gpio`
+or `dialout` group, or run with sudo if needed.)
 
 ## Run
 ```bash

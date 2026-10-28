@@ -24,12 +24,6 @@ INVERT_X="${INVERT_X:-false}"
 INVERT_Y="${INVERT_Y:-false}"
 STEPS_PER_MM="${STEPS_PER_MM:-1600.0}"
 
-echo "==> Ensuring pigpiod is running (hardware-timed step pulses)…"
-if ! pgrep -x pigpiod >/dev/null; then
-  sudo systemctl start pigpiod 2>/dev/null || sudo pigpiod || true
-  sleep 1
-fi
-
 echo "==> Freeing the camera (kill stale nodes, unload uvcvideo)…"
 pkill -9 -f realsense2_camera_node 2>/dev/null || true
 pkill -9 -f aruco_ir_depth_node   2>/dev/null || true
