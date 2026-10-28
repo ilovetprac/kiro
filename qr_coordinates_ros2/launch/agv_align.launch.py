@@ -23,7 +23,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    # Marker-detection launch (camera + aruco_ir_depth_node).
+    # Marker-detection launch (camera + aruco_ir_depth_node), with dict/target
+    # passed through from this launch's arguments.
     aruco_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
@@ -31,6 +32,10 @@ def generate_launch_description():
                 "launch", "aruco_ir_depth.launch.py",
             ])
         ),
+        launch_arguments={
+            "aruco_dictionary": LaunchConfiguration("aruco_dictionary"),
+            "target_id": LaunchConfiguration("target_id"),
+        }.items(),
     )
 
     # Pi GPIO stepper driver node.
@@ -59,6 +64,8 @@ def generate_launch_description():
         DeclareLaunchArgument("steps_per_mm", default_value="1600.0"),
         DeclareLaunchArgument("invert_x", default_value="false"),
         DeclareLaunchArgument("invert_y", default_value="false"),
+        DeclareLaunchArgument("aruco_dictionary", default_value="DICT_4X4_250"),
+        DeclareLaunchArgument("target_id", default_value="1"),
         aruco_launch,
         stepper,
     ])
