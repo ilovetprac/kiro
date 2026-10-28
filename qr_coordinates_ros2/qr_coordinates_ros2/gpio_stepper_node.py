@@ -18,7 +18,8 @@ Behaviour:
     so receiving a message == "valid target present".
   * STOP (hold) if no marker message arrives within lost_timeout_s.
   * Always chase the LATEST reading (real-time correction).
-  * Two-speed: fast when far, fine when close; deadband = aligned.
+  * Two-speed: fast when far, fine when close. NO lock/latch — it corrects
+    continuously in real time; the small deadband only prevents jitter.
   * +/- travel clamp from the power-on centre (no end-stops -> centre first).
 
 Wiring (per driver, common-cathode):
@@ -59,7 +60,11 @@ class GpioStepperNode(Node):
         self.declare_parameter("marker_topic",
                                "/aruco_ir_depth_node/marker/xy_mm")
         self.declare_parameter("steps_per_mm", 1600.0)   # 1/8 microstep, 1mm lead
-        self.declare_parameter("deadband_mm", 1.0)
+        # No alignment "lock"/latch — the node ALWAYS corrects in real time.
+        # The deadband is only a tiny no-jitter zone: inside it the motor holds
+        # (camera noise is ~sub-mm, so a 0 deadband makes the motors buzz
+        # forever). 0.5 mm gives continuous fine correction without jitter.
+        self.declare_parameter("deadband_mm", 0.5)
         self.declare_parameter("fine_zone_mm", 5.0)
         self.declare_parameter("fast_sps", 4000)   # steps/sec far from target
         self.declare_parameter("fine_sps", 800)    # steps/sec near target

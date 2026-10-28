@@ -49,7 +49,7 @@ def generate_launch_description():
             "steps_per_mm": LaunchConfiguration("steps_per_mm"),
             "x_step_pin": 17, "x_dir_pin": 27,
             "y_step_pin": 22, "y_dir_pin": 23,
-            "deadband_mm": 1.0,
+            "deadband_mm": 0.5,
             "fine_zone_mm": 5.0,
             "fast_sps": 4000,
             "fine_sps": 800,
