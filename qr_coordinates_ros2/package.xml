@@ -20,6 +20,8 @@
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-serial</exec_depend>
+  <exec_depend>pigpio</exec_depend>
+  <exec_depend>python3-pigpio</exec_depend>
 
   <!-- Pull in the RealSense ROS 2 driver as a runtime dependency -->
   <exec_depend>realsense2_camera</exec_depend>
