@@ -31,6 +31,7 @@ setup(
             "qr_coordinates_node = qr_coordinates_ros2.qr_coordinates_node:main",
             "aruco_ir_depth_node = qr_coordinates_ros2.aruco_ir_depth_node:main",
             "serial_bridge_node = qr_coordinates_ros2.serial_bridge_node:main",
+            "gpio_stepper_node = qr_coordinates_ros2.gpio_stepper_node:main",
         ],
     },
 )
