@@ -7,7 +7,7 @@ Full AGV alignment launch — NO Arduino. Starts:
 Usage:
     ros2 launch qr_coordinates_ros2 agv_align.launch.py
 
-Requires pigpiod running:  sudo systemctl enable --now pigpiod
+Requires: sudo apt install python3-lgpio (no daemon needed).
 
 Override pins/params, e.g.:
     ros2 launch qr_coordinates_ros2 agv_align.launch.py \
