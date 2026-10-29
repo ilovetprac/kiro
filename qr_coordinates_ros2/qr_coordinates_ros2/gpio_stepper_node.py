@@ -68,7 +68,7 @@ class GpioStepperNode(Node):
         # forever). 0.5 mm gives continuous fine correction without jitter.
         self.declare_parameter("deadband_mm", 0.5)
         self.declare_parameter("fine_zone_mm", 5.0)
-        self.declare_parameter("fast_sps", 12000)   # steps/sec far from target
+        self.declare_parameter("fast_sps", 8000)   # steps/sec far from target
         self.declare_parameter("fine_sps", 1600)    # steps/sec near target
         self.declare_parameter("max_travel_mm", 70.0)
         self.declare_parameter("invert_x", False)
