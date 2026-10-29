@@ -72,7 +72,9 @@ class GpioStepperNode(Node):
         self.declare_parameter("invert_x", False)
         self.declare_parameter("invert_y", False)
         self.declare_parameter("control_rate_hz", 100.0)
-        self.declare_parameter("lost_timeout_s", 0.5)
+        # Hold through brief detection dropouts: only stop after this long with
+        # no marker. 2.0s tolerates flicker so the motors don't keep stopping.
+        self.declare_parameter("lost_timeout_s", 2.0)
 
         g = self.get_parameter
         self.xs = int(g("x_step_pin").value); self.xd = int(g("x_dir_pin").value)

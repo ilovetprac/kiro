@@ -56,7 +56,7 @@ def generate_launch_description():
             "max_travel_mm": 70.0,
             "invert_x": LaunchConfiguration("invert_x"),
             "invert_y": LaunchConfiguration("invert_y"),
-            "lost_timeout_s": 0.5,
+            "lost_timeout_s": 2.0,
         }],
     )
 
