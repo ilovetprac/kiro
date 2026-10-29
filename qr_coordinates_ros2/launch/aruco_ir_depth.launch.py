@@ -41,7 +41,7 @@ def generate_launch_description():
         "target_id", default_value="1",
         description="Only act on this marker ID; others ignored (-1 = any).")
     declare_emitter = DeclareLaunchArgument(
-        "emitter_enabled", default_value="0",
+        "emitter_enabled", default_value="1",
         description="IR projector: 0 = OFF (cleaner ArUco), 1 = ON.")
 
     # RealSense driver: infra1 (IR) + depth aligned to infra1. RGB off.
