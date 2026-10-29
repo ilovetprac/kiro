@@ -49,7 +49,7 @@ from cv_bridge import CvBridge
 
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PointStamped, Point
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Int32, String, Bool
 
 # realsense2_camera publishes images with sensor-data QoS (BEST_EFFORT). A
 # default (RELIABLE) subscriber silently receives nothing, which looks like
@@ -157,6 +157,10 @@ class ArucoIrDepthNode(Node):
         # Combined human-readable topic: "id=7 x=12.3 y=-4.8 z=512.0 (mm)".
         # Convenient so `ros2 topic echo` shows id + X/Y/Z together.
         self.info_pub = self.create_publisher(String, "~/marker/info", 10)
+        # Presence flag, published EVERY IR frame: True = target seen (with
+        # valid depth) this frame, False = not seen. Lets the stepper stop
+        # IMMEDIATELY when the marker disappears (no timeout needed).
+        self.present_pub = self.create_publisher(Bool, "~/marker/present", 10)
 
         # camera_info uses default (RELIABLE) QoS in realsense2_camera.
         self.create_subscription(CameraInfo, info_topic, self._on_info, 10)
@@ -260,6 +264,7 @@ class ArucoIrDepthNode(Node):
 
         dh, dw = depth.shape[:2]
         found_target = False
+        published_valid = False     # a usable X/Y was published this frame
         for marker_id, u, v in self._detect(ir):
             # Only act on the target marker; ignore any other ID (noise /
             # wrong markers never reach the Arduino). target_id = -1 = any.
@@ -348,15 +353,17 @@ class ArucoIrDepthNode(Node):
 
             # Store latest result; the throttled timer prints it at print_rate_hz.
             self._latest_result = (marker_id, x_mm, y_mm, z_mm)
+            published_valid = True
 
-        # Target not seen this frame -> STOP emitting. Clear the confirmation
-        # streak, smoothing, AND the latest result so the printer/topic go
-        # silent (no stale repeat). The bridge then times out and sends STOP,
-        # halting the motors immediately when the marker is removed.
+        # Target not seen (or no valid reading) this frame -> clear state.
         if not found_target:
             self._seen_streak = 0
             self._ema = None
             self._latest_result = None
+
+        # Presence flag EVERY frame: True only if a usable X/Y was published.
+        # The stepper uses this to STOP IMMEDIATELY when the marker is absent.
+        self.present_pub.publish(Bool(data=published_valid))
 
     def _print_latest(self):
         """Print the most recent marker X/Y at a fixed rate (default 10 Hz)."""

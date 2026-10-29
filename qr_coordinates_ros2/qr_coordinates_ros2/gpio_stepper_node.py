@@ -16,7 +16,8 @@ Behaviour:
   * Move only when the target marker (ID 1) is detected & in range. The vision
     node only publishes when ID 1 is confirmed (2 frames) and within +/-70 mm,
     so receiving a message == "valid target present".
-  * STOP (hold) if no marker message arrives within lost_timeout_s.
+  * STOP IMMEDIATELY when the vision node reports no marker (~/marker/present
+    = False). Otherwise act on the LATEST reading only (no timeout).
   * Always chase the LATEST reading (real-time correction).
   * Two-speed: fast when far, fine when close. NO lock/latch — it corrects
     continuously in real time; the small deadband only prevents jitter.
@@ -39,6 +40,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
+from std_msgs.msg import Bool
 
 try:
     import lgpio
@@ -72,9 +74,8 @@ class GpioStepperNode(Node):
         self.declare_parameter("invert_x", False)
         self.declare_parameter("invert_y", False)
         self.declare_parameter("control_rate_hz", 100.0)
-        # Hold through brief detection dropouts: only stop after this long with
-        # no marker. 2.0s tolerates flicker so the motors don't keep stopping.
-        self.declare_parameter("lost_timeout_s", 1.0)
+
+
 
         g = self.get_parameter
         self.xs = int(g("x_step_pin").value); self.xd = int(g("x_dir_pin").value)
@@ -89,13 +90,12 @@ class GpioStepperNode(Node):
         self.invert_x = bool(g("invert_x").value)
         self.invert_y = bool(g("invert_y").value)
         self.rate = float(g("control_rate_hz").value)
-        self.lost_timeout = float(g("lost_timeout_s").value)
 
         self.step_limit = int(self.max_travel * self.steps_per_mm)
 
         # ---- State ----
         self.latest = None       # (x_mm, y_mm) latest target
-        self.last_rx = 0.0
+        self.present = False     # marker present THIS instant (from vision node)
         self.pos_x = 0
         self.pos_y = 0
 
@@ -114,6 +114,10 @@ class GpioStepperNode(Node):
                 self.h = None
 
         self.create_subscription(Point, topic, self._on_marker, 10)
+        # Presence flag (published every frame by the vision node): stop
+        # IMMEDIATELY when False (no marker). Derive its topic from marker_topic.
+        present_topic = topic.rsplit("/", 1)[0] + "/present"
+        self.create_subscription(Bool, present_topic, self._on_present, 10)
         if self.rate > 0.0:
             self.create_timer(1.0 / self.rate, self._control)
 
@@ -132,7 +136,12 @@ class GpioStepperNode(Node):
 
     def _on_marker(self, msg: Point):
         self.latest = (float(msg.x), float(msg.y))
-        self.last_rx = self._now()
+
+    def _on_present(self, msg: Bool):
+        self.present = bool(msg.data)
+        if not self.present:
+            # Marker gone -> stop acting on the last reading immediately.
+            self.latest = None
 
     def _step_burst(self, step_pin, n, sps):
         """Emit n step pulses on step_pin at ~sps steps/sec (blocking, short)."""
@@ -178,8 +187,9 @@ class GpioStepperNode(Node):
         setattr(self, pos_attr, pos + (n if positive else -n))
 
     def _control(self):
-        # Marker lost -> stop (hold, no stepping).
-        if self.latest is None or (self._now() - self.last_rx) > self.lost_timeout:
+        # No marker present -> stop IMMEDIATELY (no timeout). Otherwise act on
+        # the LATEST reading only.
+        if not self.present or self.latest is None:
             return
         x, y = self.latest
         self._pulse_axis(x, self.xs, self.xd, "pos_x", self.invert_x)
