@@ -107,14 +107,14 @@ class ArucoIrDepthNode(Node):
         # If the marker is detected beyond +/- this many mm on either axis, the
         # reading is REJECTED (no motion) rather than driving toward the limit.
         # Slide is 150 mm (+/-75); 70 keeps a safety margin.
-        self.declare_parameter("max_offset_mm", 70.0)
+        self.declare_parameter("max_offset_mm", 0.0)   # 0 = no limit (always collect)
         # Fixed fallback distance (m) used to scale pixel->mm when measured
         # depth is unavailable. Camera-to-marker distance is < 25cm; 0.20m is a
         # reasonable mid value. Z only affects X/Y scale, not the centred point.
         self.declare_parameter("assumed_z", 0.20)
         # Require the target marker to be seen this many consecutive frames
         # before publishing, to reject single-frame false detections.
-        self.declare_parameter("confirm_frames", 2)
+        self.declare_parameter("confirm_frames", 1)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         self._target_id = int(self.get_parameter("target_id").value)
@@ -302,19 +302,19 @@ class ArucoIrDepthNode(Node):
             x = (u - cx) * z / fx          # meters, right = +
             y = -(v - cy) * z / fy         # meters, up = +  (negated)
 
-            # REJECT out-of-range: if either axis exceeds +/- max_offset_mm,
-            # do NOT move at all (don't publish). A far/spurious detection must
-            # not drive the 150 mm slide toward its hard end. Checked on the RAW
-            # offset, before smoothing, so a large value can't enter the EMA.
-            m_m = self._max_offset_mm / 1000.0
-            if abs(x) > m_m or abs(y) > m_m:
-                self._oor_count = getattr(self, "_oor_count", 0) + 1
-                if self._oor_count % 30 == 1:
-                    self.get_logger().warn(
-                        f"Marker out of range (|X|={x*1000:.0f} or "
-                        f"|Y|={y*1000:.0f} mm > {self._max_offset_mm:.0f}) "
-                        "— ignoring, not moving.")
-                continue
+            # Optional range limit. max_offset_mm <= 0 means NO LIMIT: always
+            # collect/publish data whenever the marker is detected. (The stepper
+            # still clamps slide travel to +/- max_travel_mm for safety.)
+            if self._max_offset_mm > 0.0:
+                m_m = self._max_offset_mm / 1000.0
+                if abs(x) > m_m or abs(y) > m_m:
+                    self._oor_count = getattr(self, "_oor_count", 0) + 1
+                    if self._oor_count % 30 == 1:
+                        self.get_logger().warn(
+                            f"Marker out of range (|X|={x*1000:.0f} or "
+                            f"|Y|={y*1000:.0f} mm > {self._max_offset_mm:.0f}) "
+                            "— ignoring, not moving.")
+                    continue
 
             # Confirmation: require a few consecutive detections before acting,
             # to reject single-frame false positives.
