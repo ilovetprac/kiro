@@ -54,6 +54,7 @@ def generate_launch_description():
             "fast_sps": 8000,
             "fine_sps": 1600,
             "max_travel_mm": 70.0,
+            "accel_time_s": 1.0,
             "invert_x": LaunchConfiguration("invert_x"),
             "invert_y": LaunchConfiguration("invert_y"),
         }],

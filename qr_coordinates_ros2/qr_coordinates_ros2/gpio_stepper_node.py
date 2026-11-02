@@ -74,6 +74,9 @@ class GpioStepperNode(Node):
         self.declare_parameter("invert_x", False)
         self.declare_parameter("invert_y", False)
         self.declare_parameter("control_rate_hz", 100.0)
+        # Seconds to ramp from a standstill up to full target speed (and the
+        # same rate to ramp back down). Smooths starts/stops, less rough/noisy.
+        self.declare_parameter("accel_time_s", 1.0)
 
 
 
@@ -90,12 +93,17 @@ class GpioStepperNode(Node):
         self.invert_x = bool(g("invert_x").value)
         self.invert_y = bool(g("invert_y").value)
         self.rate = float(g("control_rate_hz").value)
+        self.accel_time = float(g("accel_time_s").value)
 
         self.step_limit = int(self.max_travel * self.steps_per_mm)
 
         # ---- State ----
         self.latest = None       # (x_mm, y_mm) latest target
         self.present = False     # marker present THIS instant (from vision node)
+        # Current ramped speed per axis (sps). Ramps toward the target speed at
+        # a limited rate so motion accelerates/decelerates smoothly.
+        self.cur_sps_x = 0.0
+        self.cur_sps_y = 0.0
         self.pos_x = 0
         self.pos_y = 0
 
@@ -154,18 +162,37 @@ class GpioStepperNode(Node):
             lgpio.gpio_write(self.h, step_pin, 0)
             time.sleep(half)
 
-    def _pulse_axis(self, offset_mm, step_pin, dir_pin, pos_attr, invert):
+    def _pulse_axis(self, offset_mm, step_pin, dir_pin, pos_attr, sps_attr,
+                    invert):
         if self.h is None:
             return
+
+        # Target speed: 0 inside the deadband, else fine/fast by distance.
         if abs(offset_mm) <= self.deadband:
-            return  # within deadband -> hold
+            target_sps = 0.0
+        elif abs(offset_mm) <= self.fine_zone:
+            target_sps = float(self.fine_sps)
+        else:
+            target_sps = float(self.fast_sps)
 
-        fine = abs(offset_mm) <= self.fine_zone
-        sps = self.fine_sps if fine else self.fast_sps
+        # Ramp the current speed toward the target at a limited rate so the
+        # motor accelerates/decelerates over ~accel_time seconds (smooth).
+        cur = getattr(self, sps_attr)
+        max_sps = max(self.fast_sps, self.fine_sps)
+        max_delta = (max_sps / max(self.accel_time, 1e-3)) / self.rate
+        if target_sps > cur:
+            cur = min(cur + max_delta, target_sps)
+        else:
+            cur = max(cur - max_delta, target_sps)
+        setattr(self, sps_attr, cur)
 
-        # Steps this control tick: cap by rate and by steps needed.
+        if cur < 1.0:
+            return  # effectively stopped
+
+        # Steps this control tick at the current ramped speed, capped by the
+        # steps still needed to cancel the offset.
         want = int(abs(offset_mm) * self.steps_per_mm)
-        per_tick = max(1, int(sps / self.rate))
+        per_tick = max(1, int(cur / self.rate))
         n = min(want, per_tick)
         if n <= 0:
             return
@@ -183,17 +210,19 @@ class GpioStepperNode(Node):
             return
 
         lgpio.gpio_write(self.h, dir_pin, 1 if positive else 0)
-        self._step_burst(step_pin, n, sps)
+        self._step_burst(step_pin, n, cur)
         setattr(self, pos_attr, pos + (n if positive else -n))
 
     def _control(self):
-        # No marker present -> stop IMMEDIATELY (no timeout). Otherwise act on
-        # the LATEST reading only.
+        # No marker present -> stop IMMEDIATELY (no timeout). Reset ramp so the
+        # next acquisition accelerates smoothly from a standstill.
         if not self.present or self.latest is None:
+            self.cur_sps_x = 0.0
+            self.cur_sps_y = 0.0
             return
         x, y = self.latest
-        self._pulse_axis(x, self.xs, self.xd, "pos_x", self.invert_x)
-        self._pulse_axis(y, self.ys, self.yd, "pos_y", self.invert_y)
+        self._pulse_axis(x, self.xs, self.xd, "pos_x", "cur_sps_x", self.invert_x)
+        self._pulse_axis(y, self.ys, self.yd, "pos_y", "cur_sps_y", self.invert_y)
 
     def destroy_node(self):
         if self.h is not None:

@@ -108,6 +108,10 @@ class ArucoIrDepthNode(Node):
         # reading is REJECTED (no motion) rather than driving toward the limit.
         # Slide is 150 mm (+/-75); 70 keeps a safety margin.
         self.declare_parameter("max_offset_mm", 70.0)
+        # Fixed fallback distance (m) used to scale pixel->mm when measured
+        # depth is unavailable. Camera-to-marker distance is < 25cm; 0.20m is a
+        # reasonable mid value. Z only affects X/Y scale, not the centred point.
+        self.declare_parameter("assumed_z", 0.20)
         # Require the target marker to be seen this many consecutive frames
         # before publishing, to reject single-frame false detections.
         self.declare_parameter("confirm_frames", 2)
@@ -141,6 +145,7 @@ class ArucoIrDepthNode(Node):
         self._hold_last = bool(self.get_parameter("hold_last").value)
         self._smoothing = float(self.get_parameter("smoothing").value)
         self._max_offset_mm = float(self.get_parameter("max_offset_mm").value)
+        self._assumed_z = float(self.get_parameter("assumed_z").value)
         self._confirm_frames = int(self.get_parameter("confirm_frames").value)
         # Smoothing + confirmation state.
         self._ema = None          # (x, y, z) smoothed, meters
@@ -255,11 +260,10 @@ class ArucoIrDepthNode(Node):
 
         self._frames_seen += 1
 
+        # Depth is optional now — proceed even if it hasn't arrived (assumed Z).
         depth = self._latest_depth
-        if depth is None:
-            return  # no depth yet
         if self._intrinsics is None:
-            return
+            return  # still need camera intrinsics (fx, fy, cx, cy)
         fx, fy, cx, cy = self._intrinsics
 
         dh, dw = depth.shape[:2]
@@ -275,29 +279,24 @@ class ArucoIrDepthNode(Node):
             du = min(u, dw - 1)
             dv = min(v, dh - 1)
 
-            # Robust depth: median of the valid (non-zero) depth pixels in a
-            # small window around the marker center. A single pixel is often a
-            # depth hole even when the area around it is fine.
-            r = self._depth_window  # half-size
-            y0, y1 = max(0, dv - r), min(dh, dv + r + 1)
-            x0, x1 = max(0, du - r), min(dw, du + r + 1)
-            patch = depth[y0:y1, x0:x1].astype(np.float32)
-            valid = patch[patch > 0]
-            if valid.size == 0:
-                # No depth in the window. With hold_last we simply keep the
-                # previous reading (the 30 Hz printer keeps emitting it), so
-                # the stream doesn't stall on brief depth holes. Warn rarely.
-                self._no_depth_count = getattr(self, "_no_depth_count", 0) + 1
-                if self._no_depth_count % 60 == 1:
-                    self.get_logger().warn(
-                        f"ID {marker_id}: no depth near ({u},{v}). Enable the "
-                        "IR emitter for solid depth on flat markers, and keep "
-                        "the marker nearer the image center.")
-                continue
-            raw = float(np.median(valid))
-            z = raw / 1000.0 if depth.dtype == np.uint16 else raw  # meters
+            # Depth is OPTIONAL (no longer a gate). Try to measure depth as the
+            # median of valid pixels in a window; if unavailable, fall back to a
+            # fixed assumed Z. Z only sets the X/Y mm SCALE — the control loop
+            # centres at X=0,Y=0 regardless, so a fixed Z is fine for alignment.
+            z = self._assumed_z
+            if depth is not None:
+                r = self._depth_window  # half-size
+                y0, y1 = max(0, dv - r), min(dh, dv + r + 1)
+                x0, x1 = max(0, du - r), min(dw, du + r + 1)
+                patch = depth[y0:y1, x0:x1].astype(np.float32)
+                valid = patch[patch > 0]
+                if valid.size > 0:
+                    raw = float(np.median(valid))
+                    meas = raw / 1000.0 if depth.dtype == np.uint16 else raw
+                    if meas > 0.0:
+                        z = meas          # use real depth when available
             if z <= 0.0:
-                continue
+                z = self._assumed_z
 
             # Deproject. Cartesian: +X right, +Y UP (flip image-down v).
             x = (u - cx) * z / fx          # meters, right = +
