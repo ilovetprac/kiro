@@ -25,14 +25,10 @@ Behaviour (ONE-SHOT, no loop):
   * Two-speed with accel/decel ramp: fast when far, fine when close.
   * +/- travel clamp from the power-on centre (no end-stops -> centre first).
 
-Manual RESET / return-to-origin (two ways):
-  * ROS topic (works under `ros2 launch`, recommended): publish once to
-      ~/reset   (std_msgs/Empty)   e.g.
-        ros2 topic pub --once /gpio_stepper_node/reset std_msgs/msg/Empty "{}"
-  * Keyboard (only when the node is run standalone with a real terminal):
-      type `reset` + Enter, or press any key.
-  Either one aborts the current move, drives BOTH axes back to the power-on
-  origin (0, 0), and then exits the program cleanly.
+Exit (Ctrl+C):
+  * Press Ctrl+C to end the program. Before it quits, the node drives BOTH
+    axes back to the power-on origin (0, 0), then powers down the pins and
+    exits cleanly.
 
 Wiring (per driver, common-cathode):
   Pi GPIO STEP pin -> PUL+ , Pi GPIO DIR pin -> DIR+ , Pi GND -> PUL- and DIR-
@@ -47,29 +43,16 @@ Default BCM pins (override via parameters):
 Install:  sudo apt install python3-lgpio
 """
 
-import sys
-import threading
 import time
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
-from std_msgs.msg import Empty
 
 try:
     import lgpio
 except ImportError:
     lgpio = None
-
-# Optional raw-terminal single-keypress support (POSIX). If stdin is not a
-# real terminal (e.g. launched by ros2 launch, or piped), we fall back to
-# line input: the user types `reset` + Enter instead.
-try:
-    import termios
-    import tty
-    _HAVE_TERMIOS = True
-except ImportError:  # non-POSIX
-    _HAVE_TERMIOS = False
 
 
 class GpioStepperNode(Node):
@@ -138,11 +121,6 @@ class GpioStepperNode(Node):
         self.pos_x = 0
         self.pos_y = 0
 
-        # Manual-reset flags (set from the keyboard thread, read in _control).
-        self._reset_requested = False   # user asked to return to origin + quit
-        self._finished = False          # homing done -> main() should shut down
-        self._stop_keys = threading.Event()  # signals the key thread to exit
-
         # ---- lgpio ----
         self.h = None
         if lgpio is None:
@@ -161,9 +139,6 @@ class GpioStepperNode(Node):
         # One-shot: we ignore ~/marker/present entirely. We only need the ONE
         # confirmed snapshot; losing the marker afterwards must NOT abort the
         # move or re-arm. No presence subscription.
-        # RESET trigger topic: publishing anything here returns to origin +
-        # quits. This works even under `ros2 launch` (stdin keyboard does not).
-        self.create_subscription(Empty, "~/reset", self._on_reset, 10)
         if self.rate > 0.0:
             self.create_timer(1.0 / self.rate, self._control)
 
@@ -176,71 +151,10 @@ class GpioStepperNode(Node):
             f"travel +/-{self.max_travel} mm\n"
             f"  speeds:     fast {self.fast_sps} sps, fine {self.fine_sps} sps\n"
             "Centre the slides before use (power-on = 0,0). No end-stops.\n"
-            "RESET -> origin + quit:  ros2 topic pub --once "
-            "/gpio_stepper_node/reset std_msgs/msg/Empty \"{}\"  "
-            "(or type `reset`/press a key if run standalone).")
-
-        # Start the background keyboard listener (reset-to-origin trigger).
-        self._key_thread = threading.Thread(
-            target=self._key_listener, daemon=True)
-        self._key_thread.start()
+            "Press Ctrl+C to quit: both axes return to origin (0,0) first.")
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
-
-    def _request_reset(self, why):
-        """Flag a return-to-origin + quit (idempotent)."""
-        if not self._reset_requested:
-            self._reset_requested = True
-            self.get_logger().info(
-                f"RESET requested ({why}) -> returning to origin (0,0).")
-
-    def _on_reset(self, _msg):
-        """ROS trigger: a message on ~/reset returns to origin and quits."""
-        self._request_reset("~/reset topic")
-
-    def _key_listener(self):
-        """Background thread: trigger reset on a keypress or the word `reset`.
-
-        * Interactive terminal (TTY): any single keypress triggers reset.
-        * Non-TTY / piped stdin: read lines; the word `reset` triggers it.
-        """
-        stdin = sys.stdin
-        try:
-            is_tty = _HAVE_TERMIOS and stdin is not None and stdin.isatty()
-        except Exception:  # noqa: BLE001
-            is_tty = False
-
-        if is_tty:
-            fd = stdin.fileno()
-            old = termios.tcgetattr(fd)
-            try:
-                tty.setcbreak(fd)   # char-at-a-time, no Enter needed
-                while not self._stop_keys.is_set():
-                    ch = stdin.read(1)
-                    if ch == "":
-                        break       # EOF
-                    self._request_reset(f"key '{ch!r}'")
-                    break
-            except Exception:  # noqa: BLE001
-                pass
-            finally:
-                try:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            # Line mode: wait for the user to type `reset` (any case) + Enter.
-            try:
-                while not self._stop_keys.is_set():
-                    line = stdin.readline()
-                    if line == "":
-                        break       # EOF (e.g. no stdin attached)
-                    if line.strip().lower() == "reset":
-                        self._request_reset("typed 'reset'")
-                        break
-            except Exception:  # noqa: BLE001
-                pass
 
     def _on_marker(self, msg: Point):
         # Capture only the FIRST confirmed reading; ignore the rest. The vision
@@ -260,28 +174,6 @@ class GpioStepperNode(Node):
             time.sleep(half)
 
     def _control(self):
-        # RESET has top priority: abort whatever we're doing and home to (0,0).
-        if self._reset_requested and self.state != "HOMING" \
-                and not self._finished:
-            self.state = "HOMING"
-            self.goal_pos_x = 0
-            self.goal_pos_y = 0
-            self.cur_sps_x = 0.0
-            self.cur_sps_y = 0.0
-            self.get_logger().info("HOMING -> origin (0,0).")
-
-        # HOMING: drive both axes back to the power-on origin, then finish.
-        if self.state == "HOMING":
-            hx = self._move_to(self.xs, self.xd, "pos_x", "cur_sps_x", 0)
-            hy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y", 0)
-            if not hx and not hy:
-                self.cur_sps_x = 0.0
-                self.cur_sps_y = 0.0
-                self.get_logger().info(
-                    "Reached origin (0,0) -> exiting.")
-                self._finished = True   # main() sees this and shuts down
-            return
-
         # ARMED: capture the first confirmed target as a fixed goal, then move.
         if self.state == "ARMED":
             if self.latest is None:
@@ -361,10 +253,25 @@ class GpioStepperNode(Node):
         setattr(self, pos_attr, pos + (n if positive else -n))
         return True
 
+    def return_to_origin(self):
+        """Drive BOTH axes back to the power-on origin (0,0), blocking until
+        done. Called on Ctrl+C before shutdown. Uses the same ramped stepping
+        as the alignment move, interleaving the two axes so they home together.
+        """
+        if self.h is None:
+            return
+        self.get_logger().info("Ctrl+C -> returning to origin (0,0)…")
+        self.cur_sps_x = 0.0
+        self.cur_sps_y = 0.0
+        # Loop the ramped mover until both axes report "arrived".
+        while True:
+            hx = self._move_to(self.xs, self.xd, "pos_x", "cur_sps_x", 0)
+            hy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y", 0)
+            if not hx and not hy:
+                break
+        self.get_logger().info("Reached origin (0,0).")
+
     def destroy_node(self):
-        # Signal the keyboard thread to stop (it is a daemon, so this is best
-        # effort — it may be blocked on a stdin read until the next keypress).
-        self._stop_keys.set()
         if self.h is not None:
             try:
                 for p in (self.xs, self.xd, self.ys, self.yd):
@@ -379,15 +286,14 @@ def main(args=None):
     rclpy.init(args=args)
     node = GpioStepperNode()
     try:
-        # Spin in short slices so we can notice the reset-homing finishing and
-        # exit the program ourselves (the control timer drives the homing move).
-        while rclpy.ok() and not node._finished:
-            rclpy.spin_once(node, timeout_sec=0.1)
+        rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        # On Ctrl+C: return both axes to the origin BEFORE shutting down.
+        try:
+            node.return_to_origin()
+        except Exception as exc:  # noqa: BLE001
+            node.get_logger().error(f"return_to_origin failed: {exc}")
     finally:
-        if node._finished:
-            node.get_logger().info("Returned to origin — shutting down.")
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
