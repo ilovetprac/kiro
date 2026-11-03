@@ -43,6 +43,10 @@ def generate_launch_description():
     declare_emitter = DeclareLaunchArgument(
         "emitter_enabled", default_value="1",
         description="IR projector: 0 = OFF (cleaner ArUco), 1 = ON.")
+    declare_ma = DeclareLaunchArgument(
+        "ma_window", default_value="5",
+        description="Temporal Moving Average window (frames) on output X/Y/Z. "
+                    "1 = off. Higher = smoother but more lag.")
     declare_preset = DeclareLaunchArgument(
         "depth_preset", default_value="High Accuracy",
         description="D400 depth visual preset. 'High Accuracy' gives fewer but "
@@ -98,6 +102,7 @@ def generate_launch_description():
             "depth_topic": "/camera/camera/depth/image_rect_raw",
             "camera_info_topic": "/camera/camera/infra1/camera_info",
             "sync_slop": 0.05,
+            "ma_window": LaunchConfiguration("ma_window"),
         }],
     )
 
@@ -106,6 +111,7 @@ def generate_launch_description():
         declare_aruco_dict,
         declare_target_id,
         declare_emitter,
+        declare_ma,
         declare_preset,
         realsense_launch,
         node,
