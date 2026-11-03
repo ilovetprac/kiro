@@ -98,10 +98,18 @@ class GpioStepperNode(Node):
         self.step_limit = int(self.max_travel * self.steps_per_mm)
 
         # ---- State ----
-        self.latest = None       # (x_mm, y_mm) latest target
-        self.present = False     # marker present THIS instant (from vision node)
-        # Current ramped speed per axis (sps). Ramps toward the target speed at
-        # a limited rate so motion accelerates/decelerates smoothly.
+        # Snapshot-and-move state machine:
+        #   ARMED  -> waiting to capture a confirmed target
+        #   MOVING -> driving to the captured goal (open loop)
+        #   DONE   -> reached the goal, holding; re-arm when marker is lost
+        self.latest = None       # (x_mm, y_mm) latest confirmed reading
+        self.present = False     # marker present THIS instant
+        self.state = "ARMED"
+        self.goal_x_mm = 0.0     # captured target offset (mm) at snapshot time
+        self.goal_y_mm = 0.0
+        self.goal_pos_x = 0      # captured goal in absolute steps
+        self.goal_pos_y = 0
+        # Current ramped speed per axis (sps) for smooth accel/decel.
         self.cur_sps_x = 0.0
         self.cur_sps_y = 0.0
         self.pos_x = 0
@@ -146,10 +154,16 @@ class GpioStepperNode(Node):
         self.latest = (float(msg.x), float(msg.y))
 
     def _on_present(self, msg: Bool):
+        was_present = self.present
         self.present = bool(msg.data)
         if not self.present:
-            # Marker gone -> stop acting on the last reading immediately.
             self.latest = None
+            # Marker lost -> RE-ARM for the next docking cycle.
+            if self.state != "ARMED":
+                self.get_logger().info("Marker lost -> re-armed.")
+            self.state = "ARMED"
+            self.cur_sps_x = 0.0
+            self.cur_sps_y = 0.0
 
     def _step_burst(self, step_pin, n, sps):
         """Emit n step pulses on step_pin at ~sps steps/sec (blocking, short)."""
@@ -162,67 +176,86 @@ class GpioStepperNode(Node):
             lgpio.gpio_write(self.h, step_pin, 0)
             time.sleep(half)
 
-    def _pulse_axis(self, offset_mm, step_pin, dir_pin, pos_attr, sps_attr,
-                    invert):
-        if self.h is None:
+    def _control(self):
+        if not self.present:
+            return  # no marker -> hold (already re-armed in _on_present)
+
+        # ARMED: capture the first confirmed target as a fixed goal, then move.
+        if self.state == "ARMED":
+            if self.latest is None:
+                return  # wait for a confirmed reading
+            gx, gy = self.latest
+            # Goal in absolute steps = current position + offset-to-cancel.
+            # Moving to cancel the offset: dir sign handled in _move_axis.
+            self.goal_x_mm, self.goal_y_mm = gx, gy
+            self.goal_pos_x = self.pos_x + self._offset_to_steps(gx, self.invert_x)
+            self.goal_pos_y = self.pos_y + self._offset_to_steps(gy, self.invert_y)
+            # Clamp goal to travel limits.
+            self.goal_pos_x = max(-self.step_limit,
+                                  min(self.step_limit, self.goal_pos_x))
+            self.goal_pos_y = max(-self.step_limit,
+                                  min(self.step_limit, self.goal_pos_y))
+            self.state = "MOVING"
+            self.get_logger().info(
+                f"Captured target X={gx:+.1f} Y={gy:+.1f} mm -> moving.")
             return
 
-        # Target speed: 0 inside the deadband, else fine/fast by distance.
-        if abs(offset_mm) <= self.deadband:
-            target_sps = 0.0
-        elif abs(offset_mm) <= self.fine_zone:
-            target_sps = float(self.fine_sps)
-        else:
-            target_sps = float(self.fast_sps)
-
-        # Ramp the current speed toward the target at a limited rate so the
-        # motor accelerates/decelerates over ~accel_time seconds (smooth).
-        cur = getattr(self, sps_attr)
-        max_sps = max(self.fast_sps, self.fine_sps)
-        max_delta = (max_sps / max(self.accel_time, 1e-3)) / self.rate
-        if target_sps > cur:
-            cur = min(cur + max_delta, target_sps)
-        else:
-            cur = max(cur - max_delta, target_sps)
-        setattr(self, sps_attr, cur)
-
-        if cur < 1.0:
-            return  # effectively stopped
-
-        # Steps this control tick at the current ramped speed, capped by the
-        # steps still needed to cancel the offset.
-        want = int(abs(offset_mm) * self.steps_per_mm)
-        per_tick = max(1, int(cur / self.rate))
-        n = min(want, per_tick)
-        if n <= 0:
+        # MOVING: drive each axis to its captured goal (open loop), then stop.
+        if self.state == "MOVING":
+            dx = self._move_to(self.xs, self.xd, "pos_x", "cur_sps_x",
+                               self.goal_pos_x)
+            dy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y",
+                               self.goal_pos_y)
+            if not dx and not dy:
+                self.state = "DONE"
+                self.cur_sps_x = 0.0
+                self.cur_sps_y = 0.0
+                self.get_logger().info("Reached target -> STOPPED (holding).")
             return
 
-        positive = offset_mm < 0           # negative offset -> step "forward"
+        # DONE: hold. Re-arm happens when the marker is lost (_on_present).
+
+    def _offset_to_steps(self, offset_mm, invert):
+        """Steps to cancel offset_mm (signed). +offset -> move to reduce it."""
+        steps = int(round(abs(offset_mm) * self.steps_per_mm))
+        positive = offset_mm < 0
         if invert:
             positive = not positive
+        return steps if positive else -steps
 
+    def _move_to(self, step_pin, dir_pin, pos_attr, sps_attr, goal_pos):
+        """Step toward goal_pos (absolute steps) with accel/decel ramp.
+        Returns True if still moving, False if arrived."""
+        if self.h is None:
+            return False
         pos = getattr(self, pos_attr)
-        if positive and pos + n > self.step_limit:
-            n = self.step_limit - pos
-        if (not positive) and pos - n < -self.step_limit:
-            n = pos + self.step_limit
-        if n <= 0:
-            return
+        remaining = goal_pos - pos
+        if remaining == 0:
+            setattr(self, sps_attr, 0.0)
+            return False
 
+        # Ramp speed toward fast_sps; ease down near the end (decel).
+        cur = getattr(self, sps_attr)
+        max_sps = float(self.fast_sps)
+        max_delta = (max_sps / max(self.accel_time, 1e-3)) / self.rate
+        # Decel: cap target speed by remaining distance so it ramps down.
+        decel_cap = (abs(remaining) / self.steps_per_mm) * 1000.0  # ~mm scale
+        target = min(max_sps, max(self.fine_sps, decel_cap * 200.0))
+        if target > cur:
+            cur = min(cur + max_delta, target)
+        else:
+            cur = max(cur - max_delta, target)
+        setattr(self, sps_attr, cur)
+        if cur < 1.0:
+            cur = self.fine_sps
+
+        n = max(1, int(cur / self.rate))
+        n = min(n, abs(remaining))
+        positive = remaining > 0
         lgpio.gpio_write(self.h, dir_pin, 1 if positive else 0)
         self._step_burst(step_pin, n, cur)
         setattr(self, pos_attr, pos + (n if positive else -n))
-
-    def _control(self):
-        # No marker present -> stop IMMEDIATELY (no timeout). Reset ramp so the
-        # next acquisition accelerates smoothly from a standstill.
-        if not self.present or self.latest is None:
-            self.cur_sps_x = 0.0
-            self.cur_sps_y = 0.0
-            return
-        x, y = self.latest
-        self._pulse_axis(x, self.xs, self.xd, "pos_x", "cur_sps_x", self.invert_x)
-        self._pulse_axis(y, self.ys, self.yd, "pos_y", "cur_sps_y", self.invert_y)
+        return True
 
     def destroy_node(self):
         if self.h is not None:
