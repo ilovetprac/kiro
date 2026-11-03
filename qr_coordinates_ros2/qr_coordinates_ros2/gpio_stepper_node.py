@@ -12,15 +12,17 @@ Ubuntu 22.04 for the Pi. No daemon required (unlike pigpio).
 Pipeline:
   aruco_ir_depth_node  --(/marker/xy_mm, mm)-->  THIS node  -->  GPIO STEP/DIR
 
-Behaviour:
-  * Move only when the target marker (ID 1) is detected & in range. The vision
-    node only publishes when ID 1 is confirmed (2 frames) and within +/-70 mm,
-    so receiving a message == "valid target present".
-  * STOP IMMEDIATELY when the vision node reports no marker (~/marker/present
-    = False). Otherwise act on the LATEST reading only (no timeout).
-  * Always chase the LATEST reading (real-time correction).
-  * Two-speed: fast when far, fine when close. NO lock/latch — it corrects
-    continuously in real time; the small deadband only prevents jitter.
+Behaviour (ONE-SHOT, no loop):
+  * Wait for the vision node to publish ONE confirmed target. The vision node
+    only publishes after two consecutive frames agree within 0.1 mm AND the
+    marker is within the Z gate (< 25 cm), so the first message is a solid,
+    stable "snapshot".
+  * Capture that X/Y as a fixed goal, move each axis to it open-loop, then
+    STOP and HOLD FOREVER. There is NO loop and NO re-arm — once the move is
+    done the node stays DONE until it is restarted.
+  * It does NOT stop or re-arm if the marker is later lost: the captured
+    snapshot is all it needs; losing the marker mid-move must not abort it.
+  * Two-speed with accel/decel ramp: fast when far, fine when close.
   * +/- travel clamp from the power-on centre (no end-stops -> centre first).
 
 Wiring (per driver, common-cathode):
@@ -40,7 +42,6 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
-from std_msgs.msg import Bool
 
 try:
     import lgpio
@@ -98,12 +99,11 @@ class GpioStepperNode(Node):
         self.step_limit = int(self.max_travel * self.steps_per_mm)
 
         # ---- State ----
-        # Snapshot-and-move state machine:
-        #   ARMED  -> waiting to capture a confirmed target
+        # One-shot snapshot-and-move state machine (no loop, no re-arm):
+        #   ARMED  -> waiting to capture the ONE confirmed target
         #   MOVING -> driving to the captured goal (open loop)
-        #   DONE   -> reached the goal, holding; re-arm when marker is lost
-        self.latest = None       # (x_mm, y_mm) latest confirmed reading
-        self.present = False     # marker present THIS instant
+        #   DONE   -> reached the goal, holding FOREVER (restart to run again)
+        self.latest = None       # (x_mm, y_mm) first confirmed reading
         self.state = "ARMED"
         self.goal_x_mm = 0.0     # captured target offset (mm) at snapshot time
         self.goal_y_mm = 0.0
@@ -130,10 +130,9 @@ class GpioStepperNode(Node):
                 self.h = None
 
         self.create_subscription(Point, topic, self._on_marker, 10)
-        # Presence flag (published every frame by the vision node): stop
-        # IMMEDIATELY when False (no marker). Derive its topic from marker_topic.
-        present_topic = topic.rsplit("/", 1)[0] + "/present"
-        self.create_subscription(Bool, present_topic, self._on_present, 10)
+        # One-shot: we ignore ~/marker/present entirely. We only need the ONE
+        # confirmed snapshot; losing the marker afterwards must NOT abort the
+        # move or re-arm. No presence subscription.
         if self.rate > 0.0:
             self.create_timer(1.0 / self.rate, self._control)
 
@@ -151,19 +150,10 @@ class GpioStepperNode(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _on_marker(self, msg: Point):
-        self.latest = (float(msg.x), float(msg.y))
-
-    def _on_present(self, msg: Bool):
-        was_present = self.present
-        self.present = bool(msg.data)
-        if not self.present:
-            self.latest = None
-            # Marker lost -> RE-ARM for the next docking cycle.
-            if self.state != "ARMED":
-                self.get_logger().info("Marker lost -> re-armed.")
-            self.state = "ARMED"
-            self.cur_sps_x = 0.0
-            self.cur_sps_y = 0.0
+        # Capture only the FIRST confirmed reading; ignore the rest. The vision
+        # node already gated on Z<25cm + two frames agreeing within 0.1mm.
+        if self.state == "ARMED" and self.latest is None:
+            self.latest = (float(msg.x), float(msg.y))
 
     def _step_burst(self, step_pin, n, sps):
         """Emit n step pulses on step_pin at ~sps steps/sec (blocking, short)."""
@@ -177,9 +167,6 @@ class GpioStepperNode(Node):
             time.sleep(half)
 
     def _control(self):
-        if not self.present:
-            return  # no marker -> hold (already re-armed in _on_present)
-
         # ARMED: capture the first confirmed target as a fixed goal, then move.
         if self.state == "ARMED":
             if self.latest is None:
@@ -210,10 +197,12 @@ class GpioStepperNode(Node):
                 self.state = "DONE"
                 self.cur_sps_x = 0.0
                 self.cur_sps_y = 0.0
-                self.get_logger().info("Reached target -> STOPPED (holding).")
+                self.get_logger().info(
+                    "Reached target -> STOPPED (holding). One-shot complete; "
+                    "restart the node to run again.")
             return
 
-        # DONE: hold. Re-arm happens when the marker is lost (_on_present).
+        # DONE: hold forever. No re-arm (one-shot). Restart the node to re-run.
 
     def _offset_to_steps(self, offset_mm, invert):
         """Steps to cancel offset_mm (signed). +offset -> move to reduce it."""

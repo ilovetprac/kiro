@@ -117,7 +117,9 @@ class ArucoIrDepthNode(Node):
         self.declare_parameter("confirm_frames", 1)
         # Two consecutive frames must agree within this (mm) on BOTH X and Y to
         # confirm a stable target (the "snapshot"). Rejects noise.
-        self.declare_parameter("agree_tol_mm", 1.0)
+        self.declare_parameter("agree_tol_mm", 0.1)
+        # Z gate: only act when the marker is within this distance (m). < 0.25 m.
+        self.declare_parameter("max_z", 0.25)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         self._target_id = int(self.get_parameter("target_id").value)
@@ -151,6 +153,7 @@ class ArucoIrDepthNode(Node):
         self._assumed_z = float(self.get_parameter("assumed_z").value)
         self._confirm_frames = int(self.get_parameter("confirm_frames").value)
         self._agree_tol_mm = float(self.get_parameter("agree_tol_mm").value)
+        self._max_z = float(self.get_parameter("max_z").value)
         self._prev_xy = None      # previous frame's (x, y) for agreement check
         # Smoothing + confirmation state.
         self._ema = None          # (x, y, z) smoothed, meters
@@ -284,11 +287,8 @@ class ArucoIrDepthNode(Node):
             du = min(u, dw - 1)
             dv = min(v, dh - 1)
 
-            # Depth is OPTIONAL (no longer a gate). Try to measure depth as the
-            # median of valid pixels in a window; if unavailable, fall back to a
-            # fixed assumed Z. Z only sets the X/Y mm SCALE — the control loop
-            # centres at X=0,Y=0 regardless, so a fixed Z is fine for alignment.
-            z = self._assumed_z
+            # Measure depth (median of valid pixels in a window around centre).
+            z = 0.0
             if depth is not None:
                 r = self._depth_window  # half-size
                 y0, y1 = max(0, dv - r), min(dh, dv + r + 1)
@@ -297,11 +297,13 @@ class ArucoIrDepthNode(Node):
                 valid = patch[patch > 0]
                 if valid.size > 0:
                     raw = float(np.median(valid))
-                    meas = raw / 1000.0 if depth.dtype == np.uint16 else raw
-                    if meas > 0.0:
-                        z = meas          # use real depth when available
-            if z <= 0.0:
-                z = self._assumed_z
+                    z = raw / 1000.0 if depth.dtype == np.uint16 else raw
+
+            # Z GATE: only proceed when the marker is within max_z (< 25 cm).
+            # Needs a valid depth reading; if none or too far, skip this frame.
+            if z <= 0.0 or z > self._max_z:
+                self._prev_xy = None       # reset agreement when out of range
+                continue
 
             # Deproject. Cartesian: +X right, +Y UP (flip image-down v).
             x = (u - cx) * z / fx          # meters, right = +
