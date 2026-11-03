@@ -297,11 +297,12 @@ class ArucoIrDepthNode(Node):
         self._frames_seen += 1
 
         # Depth is REQUIRED now (no assumed-Z fallback). Wait for both a depth
-        # frame and the camera intrinsics before doing anything.
+        # frame and the camera intrinsics before doing anything. Stay SILENT
+        # until then — do NOT publish present=false every frame (that floods
+        # `ros2 topic echo` with endless "---" separators before the camera
+        # has anything to report).
         depth = self._latest_depth
         if depth is None or self._intrinsics is None:
-            # Nothing usable this frame -> marker not present for the motor.
-            self.present_pub.publish(Bool(data=False))
             return
         fx, fy, cx, cy = self._intrinsics
 
