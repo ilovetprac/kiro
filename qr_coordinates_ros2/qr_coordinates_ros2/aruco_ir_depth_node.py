@@ -28,16 +28,25 @@ Subscribes (time-synchronized):
   <camera_info_topic>   sensor_msgs/CameraInfo  infra1 intrinsics
 
 Publishes:
-  ~/marker/id      std_msgs/Int32              detected marker ID
-  ~/marker/point   geometry_msgs/PointStamped  (x, y, z) in METERS, Cartesian
-                                               (+X right, +Y up, +Z forward)
-  ~/marker/xy_mm   geometry_msgs/Point         (x, y) in MILLIMETERS, Cartesian
-                                               — convenient for the Arduino bridge
+  ~/marker/id        std_msgs/Int32              detected marker ID
+  ~/marker/point     geometry_msgs/PointStamped  (x, y, z) in METERS, Cartesian
+                                                 (+X right, +Y up, +Z forward)
+  ~/marker/xy_mm_live geometry_msgs/Point        LIVE (x, y, z) in MILLIMETERS
+                                                 for ANY distance — monitoring
+  ~/marker/xy_mm     geometry_msgs/Point         MOTOR snapshot (x, y, z) in mm,
+                                                 ONLY when Z <= max_z and two
+                                                 frames agree — the stepper
+                                                 captures its one-shot from here
+
+All output coordinates are smoothed by a Temporal Moving Average (ma_window
+frames) before being printed/published/gated.
 
 A future Arduino link is just another subscriber: a small node (micro-ROS,
 rosserial, or a pyserial script) subscribes to ~/marker/xy_mm and forwards the
 values over USB serial. No change needed here.
 """
+
+from collections import deque
 
 import numpy as np
 import rclpy
@@ -119,7 +128,14 @@ class ArucoIrDepthNode(Node):
         # confirm a stable target (the "snapshot"). Rejects noise.
         self.declare_parameter("agree_tol_mm", 0.1)
         # Z gate: only act when the marker is within this distance (m). < 0.25 m.
+        # NOTE: this gates only the MOTOR path (snapshot/agreement). Live
+        # readings are still deprojected, filtered, printed and published for
+        # ALL distances so you can see the data even when Z > max_z.
         self.declare_parameter("max_z", 0.25)
+        # Temporal Moving Average window (frames) applied to the output X/Y/Z.
+        # The last N valid readings are averaged -> smoother, less noisy output.
+        # 1 = disabled (raw). 5 is a good start at ~30 Hz (~0.17 s of data).
+        self.declare_parameter("ma_window", 5)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         self._target_id = int(self.get_parameter("target_id").value)
@@ -154,6 +170,11 @@ class ArucoIrDepthNode(Node):
         self._confirm_frames = int(self.get_parameter("confirm_frames").value)
         self._agree_tol_mm = float(self.get_parameter("agree_tol_mm").value)
         self._max_z = float(self.get_parameter("max_z").value)
+        self._ma_window = max(1, int(self.get_parameter("ma_window").value))
+        # Rolling buffers for the Temporal Moving Average filter (meters).
+        self._ma_x = deque(maxlen=self._ma_window)
+        self._ma_y = deque(maxlen=self._ma_window)
+        self._ma_z = deque(maxlen=self._ma_window)
         self._prev_xy = None      # previous frame's (x, y) for agreement check
         # Smoothing + confirmation state.
         self._ema = None          # (x, y, z) smoothed, meters
@@ -166,7 +187,14 @@ class ArucoIrDepthNode(Node):
         self.id_pub = self.create_publisher(Int32, "~/marker/id", 10)
         self.point_pub = self.create_publisher(
             PointStamped, "~/marker/point", 10)
+        # MOTOR snapshot topic: published ONLY for Z-gated, agreement-confirmed
+        # readings. The stepper captures its one-shot target from this topic.
         self.xy_mm_pub = self.create_publisher(Point, "~/marker/xy_mm", 10)
+        # LIVE topic: published for EVERY valid-depth reading at ANY distance
+        # (TMA-filtered). Lets you monitor the data even when Z > max_z, without
+        # feeding the motor path. Mirrors ~/marker/xy_mm's (x, y, z in mm).
+        self.xy_mm_live_pub = self.create_publisher(
+            Point, "~/marker/xy_mm_live", 10)
         # Combined human-readable topic: "id=7 x=12.3 y=-4.8 z=512.0 (mm)".
         # Convenient so `ros2 topic echo` shows id + X/Y/Z together.
         self.info_pub = self.create_publisher(String, "~/marker/info", 10)
@@ -268,10 +296,13 @@ class ArucoIrDepthNode(Node):
 
         self._frames_seen += 1
 
-        # Depth is optional now — proceed even if it hasn't arrived (assumed Z).
+        # Depth is REQUIRED now (no assumed-Z fallback). Wait for both a depth
+        # frame and the camera intrinsics before doing anything.
         depth = self._latest_depth
-        if self._intrinsics is None:
-            return  # still need camera intrinsics (fx, fy, cx, cy)
+        if depth is None or self._intrinsics is None:
+            # Nothing usable this frame -> marker not present for the motor.
+            self.present_pub.publish(Bool(data=False))
+            return
         fx, fy, cx, cy = self._intrinsics
 
         dh, dw = depth.shape[:2]
@@ -299,19 +330,50 @@ class ArucoIrDepthNode(Node):
                     raw = float(np.median(valid))
                     z = raw / 1000.0 if depth.dtype == np.uint16 else raw
 
-            # Z GATE: only proceed when the marker is within max_z (< 25 cm).
-            # Needs a valid depth reading; if none or too far, skip this frame.
-            if z <= 0.0 or z > self._max_z:
-                self._prev_xy = None       # reset agreement when out of range
+            # Need a valid depth to deproject at all. No depth -> skip frame.
+            if z <= 0.0:
+                self._prev_xy = None
                 continue
 
             # Deproject. Cartesian: +X right, +Y UP (flip image-down v).
             x = (u - cx) * z / fx          # meters, right = +
             y = -(v - cy) * z / fy         # meters, up = +  (negated)
 
-            # Optional range limit. max_offset_mm <= 0 means NO LIMIT: always
-            # collect/publish data whenever the marker is detected. (The stepper
-            # still clamps slide travel to +/- max_travel_mm for safety.)
+            # --- TEMPORAL MOVING AVERAGE on the output coordinates ---
+            # Push this frame's raw (x, y, z) and use the mean of the last N.
+            # Smooths camera noise before anything is printed/published/gated.
+            self._ma_x.append(x)
+            self._ma_y.append(y)
+            self._ma_z.append(z)
+            x = float(np.mean(self._ma_x))
+            y = float(np.mean(self._ma_y))
+            z = float(np.mean(self._ma_z))
+
+            # --- LIVE OUTPUT (ANY distance) ---
+            # Always print/publish the filtered reading so you can see the data
+            # even when Z > max_z. This path NEVER touches the motor snapshot.
+            x_mm, y_mm, z_mm = x * 1000.0, y * 1000.0, z * 1000.0
+            found_target = True  # a usable live reading exists this frame
+
+            self.id_pub.publish(Int32(data=marker_id))
+            pt = PointStamped()
+            pt.header = ir_msg.header
+            pt.point.x, pt.point.y, pt.point.z = float(x), float(y), float(z)
+            self.point_pub.publish(pt)
+            live = Point()
+            live.x, live.y, live.z = float(x_mm), float(y_mm), float(z_mm)
+            self.xy_mm_live_pub.publish(live)
+            # Feed the throttled console printer (shows live X/Y/Z at any Z).
+            self._latest_result = (marker_id, x_mm, y_mm, z_mm)
+
+            # --- Z GATE for the MOTOR path only ---
+            # Beyond max_z: keep streaming live data (done above) but do NOT
+            # snapshot or publish ~/marker/xy_mm, and reset the agreement.
+            if z > self._max_z:
+                self._prev_xy = None
+                continue
+
+            # Optional range limit (motor path). max_offset_mm <= 0 = no limit.
             if self._max_offset_mm > 0.0:
                 m_m = self._max_offset_mm / 1000.0
                 if abs(x) > m_m or abs(y) > m_m:
@@ -321,12 +383,12 @@ class ArucoIrDepthNode(Node):
                             f"Marker out of range (|X|={x*1000:.0f} or "
                             f"|Y|={y*1000:.0f} mm > {self._max_offset_mm:.0f}) "
                             "— ignoring, not moving.")
+                    self._prev_xy = None
                     continue
 
-            # STABLE-FRAME CONFIRMATION: require THIS frame's (x,y) to agree
-            # with the PREVIOUS frame's within agree_tol_mm. Only then do we
-            # treat it as a confirmed, stable target (the "snapshot"). This
-            # rejects noise and gives the stepper one solid value to move to.
+            # STABLE-FRAME CONFIRMATION (motor snapshot): require THIS frame's
+            # (x,y) to agree with the PREVIOUS within agree_tol_mm. Only then is
+            # it a confirmed snapshot the stepper may capture and move to.
             tol = self._agree_tol_mm / 1000.0
             prev = self._prev_xy
             self._prev_xy = (x, y)
@@ -337,37 +399,31 @@ class ArucoIrDepthNode(Node):
             # Two frames agree -> confirmed target = average of the two.
             x = 0.5 * (x + prev[0])
             y = 0.5 * (y + prev[1])
+            x_mm, y_mm = x * 1000.0, y * 1000.0
 
             self._detections += 1
 
-            # Publish ID
-            self.id_pub.publish(Int32(data=marker_id))
-
-            # Publish 3D point in meters (standard ROS)
-            pt = PointStamped()
-            pt.header = ir_msg.header
-            pt.point.x, pt.point.y, pt.point.z = float(x), float(y), float(z)
-            self.point_pub.publish(pt)
-
-            # Publish X,Y in millimeters (for the Arduino bridge)
-            x_mm, y_mm, z_mm = x * 1000.0, y * 1000.0, z * 1000.0
+            # Publish the MOTOR snapshot (stepper captures its one-shot here).
             xy = Point()
             xy.x, xy.y, xy.z = float(x_mm), float(y_mm), float(z_mm)
             self.xy_mm_pub.publish(xy)
-
-            # Store latest result; the throttled timer prints it at print_rate_hz.
-            self._latest_result = (marker_id, x_mm, y_mm, z_mm)
             published_valid = True
 
-        # Target not seen (or no valid reading) this frame -> clear state.
+        # Target not seen (no valid reading) this frame -> clear state.
         if not found_target:
             self._seen_streak = 0
             self._ema = None
             self._prev_xy = None       # restart agreement on re-acquire
             self._latest_result = None
+            # Clear the moving-average buffers so a re-acquired marker starts
+            # fresh rather than averaging across a gap.
+            self._ma_x.clear()
+            self._ma_y.clear()
+            self._ma_z.clear()
 
-        # Presence flag EVERY frame: True only if a usable X/Y was published.
-        # The stepper uses this to STOP IMMEDIATELY when the marker is absent.
+        # Presence flag EVERY frame: True only when a Z-gated, agreement-
+        # confirmed snapshot (~/marker/xy_mm) was published this frame. Live
+        # readings beyond max_z do NOT set this, so the motor path stays gated.
         self.present_pub.publish(Bool(data=published_valid))
 
     def _print_latest(self):

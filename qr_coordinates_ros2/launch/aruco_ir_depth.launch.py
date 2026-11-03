@@ -43,6 +43,12 @@ def generate_launch_description():
     declare_emitter = DeclareLaunchArgument(
         "emitter_enabled", default_value="1",
         description="IR projector: 0 = OFF (cleaner ArUco), 1 = ON.")
+    declare_preset = DeclareLaunchArgument(
+        "depth_preset", default_value="High Accuracy",
+        description="D400 depth visual preset. 'High Accuracy' gives fewer but "
+                    "more trustworthy depth pixels — best for close, static, "
+                    "precise work. Others: Default, High Density, Medium "
+                    "Density, Hand.")
 
     # RealSense driver: infra1 (IR) + depth aligned to infra1. RGB off.
     realsense_launch = IncludeLaunchDescription(
@@ -62,6 +68,10 @@ def generate_launch_description():
             "enable_color": "false",
             # IR projector off by default -> cleaner marker in the IR image.
             "depth_module.emitter_enabled": emitter_enabled,
+            # Depth visual preset. "High Accuracy" = conservative, high-
+            # confidence depth (fewer but more trustworthy pixels) — best for
+            # the close-range (<25 cm), static alignment this node performs.
+            "depth_module.preset": LaunchConfiguration("depth_preset"),
             # Modest, confirmed-supported profiles for the Pi 4B.
             "depth_module.depth_profile": "640,480,30",
             "depth_module.infra_profile": "640,480,30",
@@ -96,6 +106,7 @@ def generate_launch_description():
         declare_aruco_dict,
         declare_target_id,
         declare_emitter,
+        declare_preset,
         realsense_launch,
         node,
     ])

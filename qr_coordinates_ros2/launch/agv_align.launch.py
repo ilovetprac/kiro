@@ -35,6 +35,7 @@ def generate_launch_description():
         launch_arguments={
             "aruco_dictionary": LaunchConfiguration("aruco_dictionary"),
             "target_id": LaunchConfiguration("target_id"),
+            "depth_preset": LaunchConfiguration("depth_preset"),
         }.items(),
     )
 
@@ -66,6 +67,7 @@ def generate_launch_description():
         DeclareLaunchArgument("invert_y", default_value="false"),
         DeclareLaunchArgument("aruco_dictionary", default_value="DICT_4X4_250"),
         DeclareLaunchArgument("target_id", default_value="1"),
+        DeclareLaunchArgument("depth_preset", default_value="High Accuracy"),
         aruco_launch,
         stepper,
     ])
