@@ -115,6 +115,9 @@ class ArucoIrDepthNode(Node):
         # Require the target marker to be seen this many consecutive frames
         # before publishing, to reject single-frame false detections.
         self.declare_parameter("confirm_frames", 1)
+        # Two consecutive frames must agree within this (mm) on BOTH X and Y to
+        # confirm a stable target (the "snapshot"). Rejects noise.
+        self.declare_parameter("agree_tol_mm", 1.0)
 
         dict_name = str(self.get_parameter("aruco_dictionary").value)
         self._target_id = int(self.get_parameter("target_id").value)
@@ -147,6 +150,8 @@ class ArucoIrDepthNode(Node):
         self._max_offset_mm = float(self.get_parameter("max_offset_mm").value)
         self._assumed_z = float(self.get_parameter("assumed_z").value)
         self._confirm_frames = int(self.get_parameter("confirm_frames").value)
+        self._agree_tol_mm = float(self.get_parameter("agree_tol_mm").value)
+        self._prev_xy = None      # previous frame's (x, y) for agreement check
         # Smoothing + confirmation state.
         self._ema = None          # (x, y, z) smoothed, meters
         self._seen_streak = 0     # consecutive frames the target was detected
@@ -316,22 +321,20 @@ class ArucoIrDepthNode(Node):
                             "— ignoring, not moving.")
                     continue
 
-            # Confirmation: require a few consecutive detections before acting,
-            # to reject single-frame false positives.
-            self._seen_streak += 1
-            if self._seen_streak < self._confirm_frames:
+            # STABLE-FRAME CONFIRMATION: require THIS frame's (x,y) to agree
+            # with the PREVIOUS frame's within agree_tol_mm. Only then do we
+            # treat it as a confirmed, stable target (the "snapshot"). This
+            # rejects noise and gives the stepper one solid value to move to.
+            tol = self._agree_tol_mm / 1000.0
+            prev = self._prev_xy
+            self._prev_xy = (x, y)
+            if prev is None or abs(x - prev[0]) > tol or abs(y - prev[1]) > tol:
+                # Not yet two matching frames — wait for the next one.
                 continue
 
-            # Smoothing: exponential moving average to steady the readings.
-            a = self._smoothing
-            if self._ema is None or a <= 0.0:
-                self._ema = (x, y, z)
-            else:
-                ex, ey, ez = self._ema
-                self._ema = (a * ex + (1 - a) * x,
-                             a * ey + (1 - a) * y,
-                             a * ez + (1 - a) * z)
-            x, y, z = self._ema
+            # Two frames agree -> confirmed target = average of the two.
+            x = 0.5 * (x + prev[0])
+            y = 0.5 * (y + prev[1])
 
             self._detections += 1
 
@@ -358,6 +361,7 @@ class ArucoIrDepthNode(Node):
         if not found_target:
             self._seen_streak = 0
             self._ema = None
+            self._prev_xy = None       # restart agreement on re-acquire
             self._latest_result = None
 
         # Presence flag EVERY frame: True only if a usable X/Y was published.
