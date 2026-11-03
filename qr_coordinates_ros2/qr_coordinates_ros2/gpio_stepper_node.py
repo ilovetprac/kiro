@@ -25,11 +25,6 @@ Behaviour (ONE-SHOT, no loop):
   * Two-speed with accel/decel ramp: fast when far, fine when close.
   * +/- travel clamp from the power-on centre (no end-stops -> centre first).
 
-Exit (Ctrl+C):
-  * Press Ctrl+C to end the program. Before it quits, the node drives BOTH
-    axes back to the power-on origin (0, 0), then powers down the pins and
-    exits cleanly.
-
 Wiring (per driver, common-cathode):
   Pi GPIO STEP pin -> PUL+ , Pi GPIO DIR pin -> DIR+ , Pi GND -> PUL- and DIR-
   Driver VCC/GND -> 24 V ; A+/A-/B+/B- -> motor coils. (Pi never touches 24 V.)
@@ -44,7 +39,6 @@ Install:  sudo apt install python3-lgpio
 """
 
 import time
-
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
@@ -150,8 +144,7 @@ class GpioStepperNode(Node):
             f"  steps/mm:   {self.steps_per_mm}, deadband {self.deadband} mm, "
             f"travel +/-{self.max_travel} mm\n"
             f"  speeds:     fast {self.fast_sps} sps, fine {self.fine_sps} sps\n"
-            "Centre the slides before use (power-on = 0,0). No end-stops.\n"
-            "Press Ctrl+C to quit: both axes return to origin (0,0) first.")
+            "Centre the slides before use (power-on = 0,0). No end-stops.")
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
@@ -253,24 +246,6 @@ class GpioStepperNode(Node):
         setattr(self, pos_attr, pos + (n if positive else -n))
         return True
 
-    def return_to_origin(self):
-        """Drive BOTH axes back to the power-on origin (0,0), blocking until
-        done. Called on Ctrl+C before shutdown. Uses the same ramped stepping
-        as the alignment move, interleaving the two axes so they home together.
-        """
-        if self.h is None:
-            return
-        self.get_logger().info("Ctrl+C -> returning to origin (0,0)…")
-        self.cur_sps_x = 0.0
-        self.cur_sps_y = 0.0
-        # Loop the ramped mover until both axes report "arrived".
-        while True:
-            hx = self._move_to(self.xs, self.xd, "pos_x", "cur_sps_x", 0)
-            hy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y", 0)
-            if not hx and not hy:
-                break
-        self.get_logger().info("Reached origin (0,0).")
-
     def destroy_node(self):
         if self.h is not None:
             try:
@@ -288,11 +263,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        # On Ctrl+C: return both axes to the origin BEFORE shutting down.
-        try:
-            node.return_to_origin()
-        except Exception as exc:  # noqa: BLE001
-            node.get_logger().error(f"return_to_origin failed: {exc}")
+        pass
     finally:
         node.destroy_node()
         if rclpy.ok():
