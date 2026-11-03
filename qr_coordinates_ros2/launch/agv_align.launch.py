@@ -36,6 +36,7 @@ def generate_launch_description():
             "aruco_dictionary": LaunchConfiguration("aruco_dictionary"),
             "target_id": LaunchConfiguration("target_id"),
             "depth_preset": LaunchConfiguration("depth_preset"),
+            "ma_window": LaunchConfiguration("ma_window"),
         }.items(),
     )
 
@@ -68,6 +69,7 @@ def generate_launch_description():
         DeclareLaunchArgument("aruco_dictionary", default_value="DICT_4X4_250"),
         DeclareLaunchArgument("target_id", default_value="1"),
         DeclareLaunchArgument("depth_preset", default_value="High Accuracy"),
+        DeclareLaunchArgument("ma_window", default_value="5"),
         aruco_launch,
         stepper,
     ])
