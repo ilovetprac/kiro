@@ -40,23 +40,22 @@ source "${WS}/install/setup.bash"
 cleanup() {
   echo
   echo "==> Shutting down…"
-  # Give the stepper node a chance to home first: send it a GENTLE SIGINT
-  # (Ctrl+C) so its handler drives the slides back to origin (0,0), and WAIT
-  # for it to finish before force-killing anything. A hard pkill -9 here would
-  # kill it mid-home and the slides would stay wherever they stopped.
+  # The stepper node must finish returning the slides to origin (0,0) BEFORE
+  # anything is killed. Send it a gentle SIGINT (its Ctrl+C handler homes the
+  # slides) and WAIT for it to exit ON ITS OWN — no timeout, no force-kill of
+  # the stepper. A hard kill here would stop the slides mid-return.
   if pgrep -f gpio_stepper_node >/dev/null 2>&1; then
-    echo "==> Returning slides to origin (SIGINT to gpio_stepper_node)…"
+    echo "==> Returning slides to origin — waiting for homing to COMPLETE…"
     pkill -INT -f gpio_stepper_node 2>/dev/null || true
-    # Wait up to HOME_TIMEOUT seconds for it to home + exit on its own.
-    for _ in $(seq 1 "${HOME_TIMEOUT:-30}"); do
-      pgrep -f gpio_stepper_node >/dev/null 2>&1 || break
+    # Wait indefinitely until the stepper node has fully homed and exited.
+    while pgrep -f gpio_stepper_node >/dev/null 2>&1; do
       sleep 1
     done
+    echo "==> Slides home. Stepper node exited."
   fi
-  # Now tear down everything (force-kill anything still lingering).
+  # Only now tear down the camera + vision nodes (these never move motors).
   pkill -9 -f realsense2_camera_node 2>/dev/null || true
   pkill -9 -f aruco_ir_depth_node   2>/dev/null || true
-  pkill -9 -f gpio_stepper_node     2>/dev/null || true
 }
 # Trap INT/TERM only (not EXIT) so the homing wait runs once, on the actual
 # interrupt, rather than also re-running on normal script exit.
