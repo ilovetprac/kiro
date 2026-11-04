@@ -40,11 +40,27 @@ source "${WS}/install/setup.bash"
 cleanup() {
   echo
   echo "==> Shutting down…"
+  # Give the stepper node a chance to home first: send it a GENTLE SIGINT
+  # (Ctrl+C) so its handler drives the slides back to origin (0,0), and WAIT
+  # for it to finish before force-killing anything. A hard pkill -9 here would
+  # kill it mid-home and the slides would stay wherever they stopped.
+  if pgrep -f gpio_stepper_node >/dev/null 2>&1; then
+    echo "==> Returning slides to origin (SIGINT to gpio_stepper_node)…"
+    pkill -INT -f gpio_stepper_node 2>/dev/null || true
+    # Wait up to HOME_TIMEOUT seconds for it to home + exit on its own.
+    for _ in $(seq 1 "${HOME_TIMEOUT:-30}"); do
+      pgrep -f gpio_stepper_node >/dev/null 2>&1 || break
+      sleep 1
+    done
+  fi
+  # Now tear down everything (force-kill anything still lingering).
   pkill -9 -f realsense2_camera_node 2>/dev/null || true
   pkill -9 -f aruco_ir_depth_node   2>/dev/null || true
   pkill -9 -f gpio_stepper_node     2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+# Trap INT/TERM only (not EXIT) so the homing wait runs once, on the actual
+# interrupt, rather than also re-running on normal script exit.
+trap cleanup INT TERM
 
 # Background: once the camera node is up, enable the IR emitter at RUNTIME.
 # The launch-arg route is unreliable on some realsense2_camera builds, so we
