@@ -26,8 +26,10 @@ Behaviour (ONE-SHOT, no loop):
   * +/- travel clamp from the power-on centre (no end-stops -> centre first).
 
 Exit (Ctrl+C):
-  * Pressing Ctrl+C moves the slides BACK to the power-on origin (0, 0) before
-    the program powers down the pins and exits.
+  * Pressing Ctrl+C moves the slides BACK to the power-on origin (0, 0) and
+    only then powers down the pins and exits. Homing cannot be interrupted
+    (further Ctrl+C is ignored) — the program ends ONLY once both axes are
+    physically back at step 0.
 
 Wiring (per driver, common-cathode):
   Pi GPIO STEP pin -> PUL+ , Pi GPIO DIR pin -> DIR+ , Pi GND -> PUL- and DIR-
@@ -42,7 +44,9 @@ Default BCM pins (override via parameters):
 Install:  sudo apt install python3-lgpio
 """
 
+import signal
 import time
+
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
@@ -260,15 +264,45 @@ class GpioStepperNode(Node):
         if self.h is None:
             return
         self.get_logger().info("Ctrl+C -> moving slides back to origin (0,0)…")
+
+        # CRITICAL: homing must NOT be interrupted. Ignore further SIGINT /
+        # SIGTERM for the duration so a second Ctrl+C (or the launch system
+        # sending a signal) cannot stop the slides part-way. We only finish
+        # once BOTH axes are physically at step 0.
+        prev_int = signal.getsignal(signal.SIGINT)
+        prev_term = signal.getsignal(signal.SIGTERM)
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        except (ValueError, OSError):
+            # Not on the main thread (can't set handlers) — proceed anyway.
+            prev_int = prev_term = None
+
         self.cur_sps_x = 0.0
         self.cur_sps_y = 0.0
-        # Loop the ramped mover until both axes report "arrived".
-        while True:
-            hx = self._move_to(self.xs, self.xd, "pos_x", "cur_sps_x", 0)
-            hy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y", 0)
-            if not hx and not hy:
-                break
-        self.get_logger().info("Slides back at origin (0,0).")
+        # Loop the ramped mover until BOTH axes report "arrived" (remaining 0).
+        try:
+            while True:
+                hx = self._move_to(self.xs, self.xd, "pos_x", "cur_sps_x", 0)
+                hy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y", 0)
+                if not hx and not hy:
+                    break
+        finally:
+            # Restore the original signal handlers.
+            if prev_int is not None:
+                try:
+                    signal.signal(signal.SIGINT, prev_int)
+                    signal.signal(signal.SIGTERM, prev_term)
+                except (ValueError, OSError):
+                    pass
+
+        # Hard confirmation that both axes are exactly at step 0.
+        if self.pos_x == 0 and self.pos_y == 0:
+            self.get_logger().info("Slides fully back at origin (0,0).")
+        else:
+            self.get_logger().warn(
+                f"Homing ended at X={self.pos_x} Y={self.pos_y} steps "
+                "(expected 0,0).")
 
     def destroy_node(self):
         if self.h is not None:
