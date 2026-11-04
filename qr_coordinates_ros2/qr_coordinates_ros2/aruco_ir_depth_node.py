@@ -114,9 +114,10 @@ class ArucoIrDepthNode(Node):
         # (raw), 1 = frozen. 0.3 is a good balance (responsive but steady).
         self.declare_parameter("smoothing", 0.1)
         # If the marker is detected beyond +/- this many mm on either axis, the
-        # reading is REJECTED (no motion) rather than driving toward the limit.
-        # Slide is 150 mm (+/-75); 70 keeps a safety margin.
-        self.declare_parameter("max_offset_mm", 0.0)   # 0 = no limit (always collect)
+        # reading is REJECTED (no snapshot, no motion) and we WAIT for a valid,
+        # in-range reading. Slide is 150 mm (+/-75); 70 keeps a safety margin.
+        # (<= 0 would disable the limit; 70 = reject anything over +/-70 mm.)
+        self.declare_parameter("max_offset_mm", 70.0)
         # Fixed fallback distance (m) used to scale pixel->mm when measured
         # depth is unavailable. Camera-to-marker distance is < 25cm; 0.20m is a
         # reasonable mid value. Z only affects X/Y scale, not the centred point.
