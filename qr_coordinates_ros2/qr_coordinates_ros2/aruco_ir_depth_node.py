@@ -199,6 +199,11 @@ class ArucoIrDepthNode(Node):
         # Combined human-readable topic: "id=7 x=12.3 y=-4.8 z=512.0 (mm)".
         # Convenient so `ros2 topic echo` shows id + X/Y/Z together.
         self.info_pub = self.create_publisher(String, "~/marker/info", 10)
+        # Human-readable STATUS messages (e.g. "move the robot closer"). These
+        # are both PUBLISHED here and printed to stdout, so they appear even
+        # when stderr is discarded (run.sh launches with 2>/dev/null, and ROS
+        # logger output goes to stderr).
+        self.status_pub = self.create_publisher(String, "~/marker/status", 10)
         # Presence flag, published EVERY IR frame: True = target seen (with
         # valid depth) this frame, False = not seen. Lets the stepper stop
         # IMMEDIATELY when the marker disappears (no timeout needed).
@@ -371,15 +376,19 @@ class ArucoIrDepthNode(Node):
             # --- Z GATE for the MOTOR path only ---
             # Beyond max_z: keep streaming live data (done above) but do NOT
             # snapshot or publish ~/marker/xy_mm, and reset the agreement.
-            # Also PRINT a throttled prompt to move the robot closer.
+            # Also PUBLISH + PRINT a throttled prompt to move the robot closer.
             if z > self._max_z:
                 self._prev_xy = None
                 self._far_count = getattr(self, "_far_count", 0) + 1
                 if self._far_count % 30 == 1:   # ~once/sec at 30 Hz
-                    self.get_logger().warn(
-                        f"Marker is {z * 100:.1f} cm away (more than "
-                        f"{self._max_z * 100:.0f} cm) — move the robot CLOSER "
-                        "to align.")
+                    msg = (f"Marker is {z * 100:.1f} cm away (more than "
+                           f"{self._max_z * 100:.0f} cm) — move the robot "
+                           "CLOSER to align.")
+                    # Publish on the status topic...
+                    self.status_pub.publish(String(data=msg))
+                    # ...and print to STDOUT so it shows in the main terminal
+                    # even though run.sh discards stderr (where logger writes).
+                    print(msg, flush=True)
                 continue
             # In range again -> reset the throttle so the next far event prints.
             self._far_count = 0
