@@ -91,6 +91,9 @@ def generate_launch_description():
         executable="aruco_ir_depth_node",
         name="aruco_ir_depth_node",
         output="screen",
+        # Force line-buffered, visible stdout so status prints (e.g. "move the
+        # robot closer") appear immediately in the launch terminal.
+        emulate_tty=True,
         parameters=[{
             "aruco_dictionary": aruco_dictionary,
             "target_id": LaunchConfiguration("target_id"),
