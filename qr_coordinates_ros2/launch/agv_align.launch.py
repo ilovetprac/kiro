@@ -15,7 +15,10 @@ Override pins/params, e.g.:
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (DeclareLaunchArgument, EmitEvent,
+                            IncludeLaunchDescription, RegisterEventHandler)
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -61,6 +64,17 @@ def generate_launch_description():
         }],
     )
 
+    # When the stepper node exits (its one-shot move is complete), shut the
+    # WHOLE launch down — camera + vision node included — so nothing keeps
+    # running / printing afterwards. Equivalent to Ctrl+C on everything.
+    shutdown_on_stepper_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=stepper,
+            on_exit=[EmitEvent(event=Shutdown(
+                reason="stepper move complete — shutting everything down"))],
+        )
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("steps_per_mm", default_value="1600.0"),
         DeclareLaunchArgument("invert_x", default_value="true"),
@@ -70,4 +84,5 @@ def generate_launch_description():
         DeclareLaunchArgument("depth_preset", default_value="High Accuracy"),
         aruco_launch,
         stepper,
+        shutdown_on_stepper_exit,
     ])
