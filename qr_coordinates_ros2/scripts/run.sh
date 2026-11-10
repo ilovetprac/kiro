@@ -20,8 +20,8 @@ set -e
 WS="${WS:-$HOME/ros2_ws}"
 ARUCO_DICT="${ARUCO_DICT:-DICT_4X4_250}"
 TARGET_ID="${TARGET_ID:-1}"
-INVERT_X="${INVERT_X:-false}"
-INVERT_Y="${INVERT_Y:-false}"
+INVERT_X="${INVERT_X:-true}"
+INVERT_Y="${INVERT_Y:-true}"
 STEPS_PER_MM="${STEPS_PER_MM:-1600.0}"
 EMITTER="${EMITTER:-1}"          # 1 = IR projector ON (steadier depth/detection)
 
@@ -40,26 +40,11 @@ source "${WS}/install/setup.bash"
 cleanup() {
   echo
   echo "==> Shutting down…"
-  # The stepper node must finish returning the slides to origin (0,0) BEFORE
-  # anything is killed. Send it a gentle SIGINT (its Ctrl+C handler homes the
-  # slides) and WAIT for it to exit ON ITS OWN — no timeout, no force-kill of
-  # the stepper. A hard kill here would stop the slides mid-return.
-  if pgrep -f gpio_stepper_node >/dev/null 2>&1; then
-    echo "==> Returning slides to origin — waiting for homing to COMPLETE…"
-    pkill -INT -f gpio_stepper_node 2>/dev/null || true
-    # Wait indefinitely until the stepper node has fully homed and exited.
-    while pgrep -f gpio_stepper_node >/dev/null 2>&1; do
-      sleep 1
-    done
-    echo "==> Slides home. Stepper node exited."
-  fi
-  # Only now tear down the camera + vision nodes (these never move motors).
   pkill -9 -f realsense2_camera_node 2>/dev/null || true
   pkill -9 -f aruco_ir_depth_node   2>/dev/null || true
+  pkill -9 -f gpio_stepper_node     2>/dev/null || true
 }
-# Trap INT/TERM only (not EXIT) so the homing wait runs once, on the actual
-# interrupt, rather than also re-running on normal script exit.
-trap cleanup INT TERM
+trap cleanup EXIT INT TERM
 
 # Background: once the camera node is up, enable the IR emitter at RUNTIME.
 # The launch-arg route is unreliable on some realsense2_camera builds, so we

@@ -371,9 +371,18 @@ class ArucoIrDepthNode(Node):
             # --- Z GATE for the MOTOR path only ---
             # Beyond max_z: keep streaming live data (done above) but do NOT
             # snapshot or publish ~/marker/xy_mm, and reset the agreement.
+            # Also PRINT a throttled prompt to move the robot closer.
             if z > self._max_z:
                 self._prev_xy = None
+                self._far_count = getattr(self, "_far_count", 0) + 1
+                if self._far_count % 30 == 1:   # ~once/sec at 30 Hz
+                    self.get_logger().warn(
+                        f"Marker is {z * 100:.1f} cm away (more than "
+                        f"{self._max_z * 100:.0f} cm) — move the robot CLOSER "
+                        "to align.")
                 continue
+            # In range again -> reset the throttle so the next far event prints.
+            self._far_count = 0
 
             # Optional range limit (motor path). max_offset_mm <= 0 = no limit.
             if self._max_offset_mm > 0.0:
