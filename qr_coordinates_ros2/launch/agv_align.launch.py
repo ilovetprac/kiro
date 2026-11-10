@@ -63,8 +63,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("steps_per_mm", default_value="1600.0"),
-        DeclareLaunchArgument("invert_x", default_value="false"),
-        DeclareLaunchArgument("invert_y", default_value="false"),
+        DeclareLaunchArgument("invert_x", default_value="true"),
+        DeclareLaunchArgument("invert_y", default_value="true"),
         DeclareLaunchArgument("aruco_dictionary", default_value="DICT_4X4_250"),
         DeclareLaunchArgument("target_id", default_value="1"),
         DeclareLaunchArgument("depth_preset", default_value="High Accuracy"),
