@@ -55,7 +55,7 @@ def generate_launch_description():
             "y_step_pin": 22, "y_dir_pin": 23,
             "deadband_mm": 0.5,
             "fine_zone_mm": 5.0,
-            "fast_sps": 4000,
+            "fast_sps": 4800,
             "fine_sps": 1600,
             "max_travel_mm": 70.0,
             "accel_time_s": 1.0,
