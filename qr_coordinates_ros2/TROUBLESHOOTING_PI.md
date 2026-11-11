@@ -85,15 +85,41 @@ WARNING (messenger-libusb.cpp:42) control_transfer returned error, index: 768,
   error: Resource temporarily unavailable, number: 11
 ```
 
-These are **WARNINGS, not errors** — background control-channel retries on the
-RSUSB/libusb backend. **They do NOT stop image streaming.** Confirm frames are
-actually flowing:
+These are usually **WARNINGS, not errors** — background control-channel retries
+on the RSUSB/libusb backend. **If frames are flowing they do NOT matter.**
+Confirm:
 
 ```bash
-ros2 topic hz /camera/camera/color/image_raw   # ~26 Hz = streaming fine
+ros2 topic hz /camera/camera/infra1/image_rect_raw   # ~30 Hz = streaming fine
 ```
 
 If `topic hz` shows a rate, ignore the warnings — the camera is working.
+
+### BUT: if the warning LOOPS forever and `topic hz` says "not published"
+
+Then the device is **stuck** — the node cannot complete its control transfers
+and never starts streaming (no topic is ever published). The cause is a
+contended USB interface: `uvcvideo`, a stale node, or leftover control state is
+holding the D435 even though `rs-enumerate-devices` can still see it.
+
+Fix = fully free + USB-re-enumerate the device BEFORE launching. `run.sh` now
+does this automatically (unload uvcvideo, kill stale handles, then reset the
+Intel 8086 USB device via `usbreset` or the sysfs `authorized` toggle). If you
+hit it manually:
+
+```bash
+sudo modprobe -r uvcvideo
+# power-cycle the RealSense USB device (re-enumerate):
+for d in /sys/bus/usb/devices/*; do
+  [ "$(cat "$d/idVendor" 2>/dev/null)" = "8086" ] && \
+    echo 0 | sudo tee "$d/authorized" && sleep 1 && echo 1 | sudo tee "$d/authorized"
+done
+sleep 3
+# then launch again (or just use ./run.sh, which now does all of the above)
+```
+
+If it STILL loops after a clean re-enumeration, it is power — see the POWER
+section below (use a powered USB 3.0 hub).
 
 ## `enable_sync` / `initial_reset` make the device fail to start (Pi 4B)
 

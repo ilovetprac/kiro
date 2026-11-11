@@ -79,6 +79,10 @@ def generate_launch_description():
             "enable_gyro": "false",
             "enable_accel": "false",
             "enable_sync": "false",
+            # Keep initial_reset FALSE: on this Pi 4B + RSUSB + FW 5.17.x,
+            # initial_reset:=true made the device fail to start. Instead, the
+            # device is freed + USB-re-enumerated in run.sh BEFORE launch, which
+            # clears the stuck control-transfer (errno 11) state safely.
             "initial_reset": "false",
             # Quiet the harmless "control_transfer ... Resource temporarily
             # unavailable" RSUSB WARNING flood so the marker output is readable.
