@@ -26,6 +26,14 @@ STEPS_PER_MM="${STEPS_PER_MM:-1600.0}"
 EMITTER="${EMITTER:-1}"          # 1 = IR projector ON (steadier depth/detection)
 
 echo "==> Freeing the camera (kill stale nodes, unload uvcvideo, USB reset)…"
+# No sudo password prompts: run ./install_nopasswd.sh ONCE to allow the few
+# camera-freeing commands below to run password-free. If that rule is not yet
+# installed, warn once (sudo will then prompt as usual for this run).
+if ! sudo -n true 2>/dev/null; then
+  echo "    NOTE: sudo will prompt for a password. To avoid this every time,"
+  echo "          run:  ./install_nopasswd.sh   (one-time setup)."
+fi
+
 pkill -9 -f realsense2_camera_node 2>/dev/null || true
 pkill -9 -f aruco_ir_depth_node   2>/dev/null || true
 pkill -9 -f gpio_stepper_node     2>/dev/null || true
