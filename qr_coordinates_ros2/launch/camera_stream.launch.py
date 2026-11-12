@@ -2,8 +2,9 @@
 """
 camera_stream.launch.py
 -----------------------
-Publish the live D435 camera feed from the Raspberry Pi (ROS 2 Humble) over
-WiFi so it can be SUBSCRIBED TO and PROCESSED on the mini PC (ROS 2 Jazzy).
+Publish the live D435 camera feed from the Raspberry Pi over WiFi so it can be
+SUBSCRIBED TO and PROCESSED on the mini PC. Both machines run ROS 2 Humble, so
+discovery is native (same ROS_DOMAIN_ID — no DDS tricks needed).
 
 Why this exists
 ===============
@@ -14,8 +15,7 @@ RGB ~ 27 MB/s) and will drop/stall. This launch starts the camera and a
 
 The mini PC subscribes to the COMPRESSED topic and decompresses locally back
 to a normal sensor_msgs/Image for processing — see NETWORK_STREAM.md for the
-exact commands and the required CycloneDDS / ROS_DOMAIN_ID setup (needed
-because the Pi runs Humble and the mini PC runs Jazzy).
+exact commands and the (simple) ROS_DOMAIN_ID setup.
 
 Topics published by this launch (on the Pi)
 ============================================
