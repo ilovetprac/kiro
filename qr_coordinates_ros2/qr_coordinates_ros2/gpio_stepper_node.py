@@ -18,16 +18,16 @@ Behaviour (ONE-SHOT, no loop):
     marker is within the Z gate (< 25 cm), so the first message is a solid,
     stable "snapshot".
   * Capture that X/Y as a fixed goal, move each axis to it open-loop, then
-    STOP and HOLD. There is NO loop and NO re-arm — once the move is done the
-    node stays DONE until it is restarted.
+    STOP. Once the final position is reached the PROGRAM EXITS automatically
+    (and the launch shuts everything down). There is NO loop and NO re-arm.
   * It does NOT stop or re-arm if the marker is later lost: the captured
     snapshot is all it needs; losing the marker mid-move must not abort it.
   * Two-speed with accel/decel ramp: fast when far, fine when close.
   * +/- travel clamp from the power-on centre (no end-stops -> centre first).
 
-Exit (Ctrl+C):
-  * Pressing Ctrl+C powers down the pins and exits. The slides stay where
-    they are (no return-to-origin).
+Exit:
+  * The program exits on its own once the move completes. Pressing Ctrl+C
+    before then also exits (slides stay where they are; no return-to-origin).
 
 Wiring (per driver, common-cathode):
   Pi GPIO STEP pin -> PUL+ , Pi GPIO DIR pin -> DIR+ , Pi GND -> PUL- and DIR-
@@ -107,9 +107,10 @@ class GpioStepperNode(Node):
         # One-shot snapshot-and-move state machine (no loop, no re-arm):
         #   ARMED  -> waiting to capture the ONE confirmed target
         #   MOVING -> driving to the captured goal (open loop)
-        #   DONE   -> reached the goal, holding FOREVER (restart to run again)
+        #   DONE   -> reached the goal; the program then SHUTS DOWN
         self.latest = None       # (x_mm, y_mm) first confirmed reading
         self.state = "ARMED"
+        self._finished = False   # set True when the move is done -> main() exits
         self.goal_x_mm = 0.0     # captured target offset (mm) at snapshot time
         self.goal_y_mm = 0.0
         self.goal_pos_x = 0      # captured goal in absolute steps
@@ -203,11 +204,14 @@ class GpioStepperNode(Node):
                 self.cur_sps_x = 0.0
                 self.cur_sps_y = 0.0
                 self.get_logger().info(
-                    "Reached target -> STOPPED (holding). One-shot complete; "
-                    "restart the node to run again.")
+                    "Reached final position -> STOPPED. One-shot complete; "
+                    "exiting.")
+                # Signal main() to shut the program down now that the move is
+                # finished and the motors have stopped.
+                self._finished = True
             return
 
-        # DONE: hold forever. No re-arm (one-shot). Restart the node to re-run.
+        # DONE: move complete -> main() shuts the program down.
 
     def _offset_to_steps(self, offset_mm, invert):
         """Steps to cancel offset_mm (signed). +offset -> move to reduce it."""
@@ -266,7 +270,12 @@ def main(args=None):
     rclpy.init(args=args)
     node = GpioStepperNode()
     try:
-        rclpy.spin(node)
+        # Spin in short slices so we can detect when the one-shot move has
+        # finished and exit the program automatically.
+        while rclpy.ok() and not node._finished:
+            rclpy.spin_once(node, timeout_sec=0.1)
+        if node._finished:
+            node.get_logger().info("Final position reached — shutting down.")
     except KeyboardInterrupt:
         pass
     finally:
