@@ -1,0 +1,25 @@
+# Password-free camera-freeing for the AGV alignment run.sh.
+#
+# Allows ONLY the specific commands run.sh needs to free + reset the Intel
+# RealSense D435 — nothing else. This avoids repeated sudo password prompts
+# every time you start the system.
+#
+# The token __USER__ is replaced with your username by install_nopasswd.sh.
+# Installed to /etc/sudoers.d/99-realsense-nopasswd (mode 0440).
+#
+# SECURITY NOTE: these are narrowly scoped device-management commands. They do
+# NOT grant general root access. Review before installing if you wish.
+
+Cmnd_Alias REALSENSE_FREE = \
+    /sbin/modprobe -r uvcvideo, \
+    /usr/sbin/modprobe -r uvcvideo, \
+    /bin/modprobe -r uvcvideo, \
+    /usr/bin/modprobe -r uvcvideo, \
+    /bin/fuser -k /dev/video*, \
+    /usr/bin/fuser -k /dev/video*, \
+    /usr/bin/usbreset *, \
+    /usr/local/bin/usbreset *, \
+    /bin/tee /sys/bus/usb/devices/*/authorized, \
+    /usr/bin/tee /sys/bus/usb/devices/*/authorized
+
+__USER__ ALL=(root) NOPASSWD: REALSENSE_FREE
