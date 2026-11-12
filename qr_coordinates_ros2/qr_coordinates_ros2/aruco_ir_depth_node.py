@@ -381,10 +381,13 @@ class ArucoIrDepthNode(Node):
                 self._prev_xy = None
                 self._far_count = getattr(self, "_far_count", 0) + 1
                 if self._far_count % 30 == 1:   # ~once/sec at 30 Hz
+                    # How much closer the robot must come to get under the gate.
+                    move_cm = (z - self._max_z) * 100.0
                     msg = (f"Marker is {z * 100:.1f} cm away (more than "
                            f"{self._max_z * 100:.0f} cm) — move the robot "
-                           "CLOSER to align.")
-                    # Publish on the status topic...
+                           f"{move_cm:.1f} cm CLOSER to align.")
+                    # Publish on the status topic (shown on the 2nd terminal via
+                    # `ros2 topic echo .../marker/status`)...
                     self.status_pub.publish(String(data=msg))
                     # ...and print to STDOUT so it shows in the main terminal
                     # even though run.sh discards stderr (where logger writes).
