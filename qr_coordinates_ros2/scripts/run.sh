@@ -18,6 +18,24 @@ set -e
 
 # ---- Config (override via environment variables) ----
 WS="${WS:-$HOME/ros2_ws}"
+
+# Auto-detect the ROS 2 distro (works on Jazzy/24.04 and Humble/22.04).
+# Override with ROS_DISTRO=<name> if needed.
+detect_ros_distro() {
+  if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
+    echo "${ROS_DISTRO}"; return
+  fi
+  for d in jazzy humble iron rolling; do
+    if [ -f "/opt/ros/${d}/setup.bash" ]; then echo "${d}"; return; fi
+  done
+  echo ""
+}
+ROS="$(detect_ros_distro)"
+if [ -z "${ROS}" ]; then
+  echo "ERROR: no ROS 2 distro found in /opt/ros/. Install ROS 2 first." >&2
+  exit 1
+fi
+
 ARUCO_DICT="${ARUCO_DICT:-DICT_4X4_250}"
 TARGET_ID="${TARGET_ID:-1}"
 INVERT_X="${INVERT_X:-true}"
@@ -76,8 +94,8 @@ reset_realsense_usb
 # Give the device a moment to re-enumerate before the node opens it.
 sleep 3
 
-echo "==> Sourcing ROS 2 + workspace…"
-source /opt/ros/humble/setup.bash
+echo "==> Sourcing ROS 2 (${ROS}) + workspace…"
+source "/opt/ros/${ROS}/setup.bash"
 source "${WS}/install/setup.bash"
 
 cleanup() {
