@@ -3,8 +3,8 @@
 camera_stream.launch.py
 -----------------------
 Publish the live D435 camera feed from the Raspberry Pi over WiFi so it can be
-SUBSCRIBED TO and PROCESSED on the mini PC. Both machines run ROS 2 Humble, so
-discovery is native (same ROS_DOMAIN_ID — no DDS tricks needed).
+SUBSCRIBED TO and PROCESSED on the mini PC. Both machines run ROS 2 Jazzy
+(Ubuntu 24.04), so discovery is native (same ROS_DOMAIN_ID — no DDS tricks).
 
 Why this exists
 ===============
@@ -120,7 +120,7 @@ def generate_launch_description():
     # that makes the feed small enough to stream over WiFi. The mini PC then
     # subscribes to "<image_topic>/compressed".
     #
-    # ROS 2 Humble republish CLI form:
+    # ROS 2 republish CLI form:
     #   ros2 run image_transport republish raw compressed \
     #       --ros-args -r in:=<image_topic> -r out:=<image_topic>
     # Here as a Node so JPEG quality is set via a parameter.
