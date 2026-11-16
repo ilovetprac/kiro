@@ -342,13 +342,21 @@ class ArucoIrDepthNode(Node):
                 self._prev_xy = None
                 continue
 
+            # TRUE current-frame distance (metres), BEFORE any averaging. The
+            # Z gate below MUST use this, not the moving-average Z: the average
+            # lags several frames behind the real distance, so a marker that is
+            # actually beyond max_z could slip through the gate (and the motors
+            # would move when they shouldn't). Gate on reality, smooth X/Y only.
+            z_raw = z
+
             # Deproject. Cartesian: +X right, +Y UP (flip image-down v).
             x = (u - cx) * z / fx          # meters, right = +
             y = -(v - cy) * z / fy         # meters, up = +  (negated)
 
             # --- TEMPORAL MOVING AVERAGE on the output coordinates ---
             # Push this frame's raw (x, y, z) and use the mean of the last N.
-            # Smooths camera noise before anything is printed/published/gated.
+            # Smooths camera NOISE in X/Y before publishing. Z here is for
+            # DISPLAY only; the gate uses z_raw (the true current distance).
             self._ma_x.append(x)
             self._ma_y.append(y)
             self._ma_z.append(z)
@@ -374,16 +382,25 @@ class ArucoIrDepthNode(Node):
             self._latest_result = (marker_id, x_mm, y_mm, z_mm)
 
             # --- Z GATE for the MOTOR path only ---
+            # Gate on z_raw (the TRUE current-frame distance), NOT the averaged
+            # z — otherwise the moving-average lag lets a too-far marker through
+            # and the motors move when Z is actually beyond max_z.
             # Beyond max_z: keep streaming live data (done above) but do NOT
             # snapshot or publish ~/marker/xy_mm, and reset the agreement.
             # Also PUBLISH + PRINT a throttled prompt to move the robot closer.
-            if z > self._max_z:
+            if z_raw > self._max_z:
                 self._prev_xy = None
+                # Clear the smoothing buffers so that, once the marker is back
+                # in range, the captured snapshot is built only from in-range
+                # frames (not blended with far-away readings).
+                self._ma_x.clear()
+                self._ma_y.clear()
+                self._ma_z.clear()
                 self._far_count = getattr(self, "_far_count", 0) + 1
                 if self._far_count % 30 == 1:   # ~once/sec at 30 Hz
                     # How much closer the robot must come to get under the gate.
-                    move_cm = (z - self._max_z) * 100.0
-                    msg = (f"Marker is {z * 100:.1f} cm away (more than "
+                    move_cm = (z_raw - self._max_z) * 100.0
+                    msg = (f"Marker is {z_raw * 100:.1f} cm away (more than "
                            f"{self._max_z * 100:.0f} cm) — move the robot "
                            f"{move_cm:.1f} cm CLOSER to align.")
                     # Publish on the status topic (shown on the 2nd terminal via

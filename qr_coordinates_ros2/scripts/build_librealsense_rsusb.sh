@@ -3,7 +3,10 @@
 # build_librealsense_rsusb.sh
 # ---------------------------
 # Build Intel librealsense from source with the RSUSB (libusb) backend on a
-# Raspberry Pi 4B / Ubuntu 22.04.
+# Raspberry Pi 4B. Works on Ubuntu 22.04 (Humble) and 24.04 (Jazzy).
+# On 24.04, if the default branch fails to compile with the newer GCC, check
+# out the latest librealsense release tag before building (see the commented
+# `git checkout` line below).
 #
 # WHY: On the Pi, the kernel UVC driver (e.g. kernel 5.15.0-1110-raspi) is often
 # NEWER than the versions librealsense's V4L2 backend is patched for. That makes
