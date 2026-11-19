@@ -78,7 +78,7 @@ class GpioStepperNode(Node):
         self.declare_parameter("fine_sps", 1600)    # steps/sec near target
         self.declare_parameter("max_travel_mm", 70.0)
         self.declare_parameter("invert_x", True)
-        self.declare_parameter("invert_y", True)
+        self.declare_parameter("invert_y", False)
         self.declare_parameter("control_rate_hz", 100.0)
         # Seconds to ramp from a standstill up to full target speed (and the
         # same rate to ramp back down). Smooths starts/stops, less rough/noisy.
