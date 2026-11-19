@@ -98,9 +98,13 @@ echo "==> Sourcing ROS 2 (${ROS}) + workspace…"
 source "/opt/ros/${ROS}/setup.bash"
 source "${WS}/install/setup.bash"
 
+LAUNCH_PID=""
 cleanup() {
   echo
   echo "==> Shutting down…"
+  if [ -n "${LAUNCH_PID}" ]; then
+    kill -TERM "${LAUNCH_PID}" 2>/dev/null || true
+  fi
   pkill -9 -f realsense2_camera_node 2>/dev/null || true
   pkill -9 -f aruco_ir_depth_node   2>/dev/null || true
   pkill -9 -f gpio_stepper_node     2>/dev/null || true
@@ -131,11 +135,34 @@ fi
 echo "==> Launching camera + marker + GPIO steppers…"
 echo "    dict=${ARUCO_DICT} target_id=${TARGET_ID} invert_x=${INVERT_X} invert_y=${INVERT_Y}"
 echo "============================================================"
-echo "Show ArUco ID ${TARGET_ID} to the camera (near centre, 0.3-1.5 m)."
-echo "Press Ctrl+C to stop everything."
+echo "Show ArUco ID ${TARGET_ID} to the camera (within 25 cm)."
+echo "After 'correction complete', press Enter to return X/Y to origin"
+echo "(0,0) and end the program. Ctrl+C = hard stop (slides stay put)."
 echo "============================================================"
 
+# Run the launch in the BACKGROUND (stdin from /dev/null) so this script can
+# read the Enter key itself. ros2 launch does not pass the terminal's stdin to
+# its nodes, so the node cannot read Enter directly.
 ros2 launch qr_coordinates_ros2 agv_align.launch.py \
   aruco_dictionary:="${ARUCO_DICT}" target_id:="${TARGET_ID}" \
   invert_x:="${INVERT_X}" invert_y:="${INVERT_Y}" \
-  steps_per_mm:="${STEPS_PER_MM}" 2>/dev/null
+  steps_per_mm:="${STEPS_PER_MM}" < /dev/null 2>/dev/null &
+LAUNCH_PID=$!
+
+# Each Enter press sends SIGUSR1 to the stepper node = "return to origin".
+# The node ignores it until the correction is complete. When the slides are
+# back at (0,0) the node exits, the launch shuts down, and this loop ends.
+if [ -t 0 ]; then
+  while kill -0 "${LAUNCH_PID}" 2>/dev/null; do
+    if read -r -t 1 _; then
+      # Signal ONLY the stepper node started by this launch (a broad
+      # `pkill -f` could hit any process whose command line mentions the
+      # name, and SIGUSR1's default action is to terminate it).
+      pkill -USR1 -P "${LAUNCH_PID}" -f gpio_stepper_node 2>/dev/null \
+        || pkill -USR1 -f "lib/qr_coordinates_ros2/gpio_stepper_node" 2>/dev/null \
+        || true
+    fi
+  done
+fi
+wait "${LAUNCH_PID}" 2>/dev/null || true
+LAUNCH_PID=""

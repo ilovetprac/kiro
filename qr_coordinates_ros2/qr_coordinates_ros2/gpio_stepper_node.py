@@ -18,16 +18,21 @@ Behaviour (ONE-SHOT, no loop):
     marker is within the Z gate (< 25 cm), so the first message is a solid,
     stable "snapshot".
   * Capture that X/Y as a fixed goal, move each axis to it open-loop, then
-    STOP. Once the final position is reached the PROGRAM EXITS automatically
-    (and the launch shuts everything down). There is NO loop and NO re-arm.
+    STOP, print "correction complete" and go IDLE (holding position).
+    There is NO loop and NO re-arm.
   * It does NOT stop or re-arm if the marker is later lost: the captured
     snapshot is all it needs; losing the marker mid-move must not abort it.
   * Two-speed with accel/decel ramp: fast when far, fine when close.
   * +/- travel clamp from the power-on centre (no end-stops -> centre first).
 
-Exit:
-  * The program exits on its own once the move completes. Pressing Ctrl+C
-    before then also exits (slides stay where they are; no return-to-origin).
+Return to origin + exit (Enter key):
+  * While IDLE, pressing Enter in the run.sh terminal sends this node SIGUSR1.
+    It then drives BOTH axes back to the power-on origin (0,0), prints
+    "Back at origin", and exits. The launch then shuts everything down.
+  * A home request can also be sent from any terminal with:
+      ros2 topic pub --once /gpio_stepper_node/home std_msgs/msg/Empty "{}"
+  * Requests that arrive before the correction is complete are ignored.
+  * Ctrl+C is still a hard stop: slides stay where they are.
 
 Wiring (per driver, common-cathode):
   Pi GPIO STEP pin -> PUL+ , Pi GPIO DIR pin -> DIR+ , Pi GND -> PUL- and DIR-
@@ -42,16 +47,32 @@ Default BCM pins (override via parameters):
 Install:  sudo apt install python3-lgpio
 """
 
+import signal
 import time
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
+from std_msgs.msg import Empty
 
 try:
     import lgpio
 except ImportError:
     lgpio = None
+
+# Set by the SIGUSR1 handler (Enter key in run.sh) or the ~/home topic.
+# Module-level so the signal handler can be installed before the node exists:
+# SIGUSR1's default action is to kill the process.
+_HOME_REQUEST = {"pending": False}
+
+
+def _on_sigusr1(_signum, _frame):
+    _HOME_REQUEST["pending"] = True
+
+
+def _say(msg):
+    """Print to stdout: run.sh discards stderr, where the ROS logger writes."""
+    print(msg, flush=True)
 
 
 class GpioStepperNode(Node):
@@ -107,10 +128,12 @@ class GpioStepperNode(Node):
         # One-shot snapshot-and-move state machine (no loop, no re-arm):
         #   ARMED  -> waiting to capture the ONE confirmed target
         #   MOVING -> driving to the captured goal (open loop)
-        #   DONE   -> reached the goal; the program then SHUTS DOWN
+        #   IDLE   -> correction complete, holding; waiting for Enter
+        #   HOMING -> driving both axes back to the power-on origin (0,0)
+        #   then _finished = True -> main() exits
         self.latest = None       # (x_mm, y_mm) first confirmed reading
         self.state = "ARMED"
-        self._finished = False   # set True when the move is done -> main() exits
+        self._finished = False   # set True once back at origin -> main() exits
         self.goal_x_mm = 0.0     # captured target offset (mm) at snapshot time
         self.goal_y_mm = 0.0
         self.goal_pos_x = 0      # captured goal in absolute steps
@@ -139,6 +162,8 @@ class GpioStepperNode(Node):
         # One-shot: we ignore ~/marker/present entirely. We only need the ONE
         # confirmed snapshot; losing the marker afterwards must NOT abort the
         # move or re-arm. No presence subscription.
+        # Alternative home trigger (same effect as pressing Enter in run.sh).
+        self.create_subscription(Empty, "~/home", self._on_home, 10)
         if self.rate > 0.0:
             self.create_timer(1.0 / self.rate, self._control)
 
@@ -154,6 +179,9 @@ class GpioStepperNode(Node):
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
+
+    def _on_home(self, _msg):
+        _HOME_REQUEST["pending"] = True
 
     def _on_marker(self, msg: Point):
         # Capture only the FIRST confirmed reading; ignore the rest. The vision
@@ -173,6 +201,27 @@ class GpioStepperNode(Node):
             time.sleep(half)
 
     def _control(self):
+        # Handle a pending home request (Enter key / ~/home topic).
+        if _HOME_REQUEST["pending"]:
+            _HOME_REQUEST["pending"] = False
+            if self.state == "IDLE":
+                self.state = "HOMING"
+                self.cur_sps_x = 0.0
+                self.cur_sps_y = 0.0
+                _say("Returning X and Y to origin (0,0)…")
+            elif self.state in ("ARMED", "MOVING"):
+                _say("Correction not complete yet — wait for "
+                     "'correction complete', then press Enter.")
+
+        # HOMING: drive both axes back to the power-on origin, then exit.
+        if self.state == "HOMING":
+            hx = self._move_to(self.xs, self.xd, "pos_x", "cur_sps_x", 0)
+            hy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y", 0)
+            if not hx and not hy:
+                _say("Back at origin (0,0). Exiting.")
+                self._finished = True
+            return
+
         # ARMED: capture the first confirmed target as a fixed goal, then move.
         if self.state == "ARMED":
             if self.latest is None:
@@ -200,18 +249,15 @@ class GpioStepperNode(Node):
             dy = self._move_to(self.ys, self.yd, "pos_y", "cur_sps_y",
                                self.goal_pos_y)
             if not dx and not dy:
-                self.state = "DONE"
+                self.state = "IDLE"
                 self.cur_sps_x = 0.0
                 self.cur_sps_y = 0.0
-                self.get_logger().info(
-                    "Reached final position -> STOPPED. One-shot complete; "
-                    "exiting.")
-                # Signal main() to shut the program down now that the move is
-                # finished and the motors have stopped.
-                self._finished = True
+                _say("correction complete")
+                _say("Idle. Press Enter to return X and Y to origin (0,0) "
+                     "and end the program.")
             return
 
-        # DONE: move complete -> main() shuts the program down.
+        # IDLE: hold position until a home request arrives (handled above).
 
     def _offset_to_steps(self, offset_mm, invert):
         """Steps to cancel offset_mm (signed). +offset -> move to reduce it."""
@@ -267,15 +313,14 @@ class GpioStepperNode(Node):
 
 
 def main(args=None):
+    # Install the Enter-key (SIGUSR1) handler first, before anything slow.
+    signal.signal(signal.SIGUSR1, _on_sigusr1)
     rclpy.init(args=args)
     node = GpioStepperNode()
     try:
-        # Spin in short slices so we can detect when the one-shot move has
-        # finished and exit the program automatically.
+        # Spin in short slices so we can exit once the slides are back home.
         while rclpy.ok() and not node._finished:
             rclpy.spin_once(node, timeout_sec=0.1)
-        if node._finished:
-            node.get_logger().info("Final position reached — shutting down.")
     except KeyboardInterrupt:
         pass
     finally:

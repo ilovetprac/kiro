@@ -48,6 +48,8 @@ def generate_launch_description():
         executable="gpio_stepper_node",
         name="gpio_stepper_node",
         output="screen",
+        # Line-buffered stdout so "correction complete" shows immediately.
+        emulate_tty=True,
         parameters=[{
             "marker_topic": "/aruco_ir_depth_node/marker/xy_mm",
             "steps_per_mm": LaunchConfiguration("steps_per_mm"),
